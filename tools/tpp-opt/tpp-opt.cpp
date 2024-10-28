@@ -31,19 +31,27 @@
 #include "TPP/PassBundles.h"
 #include "TPP/Passes.h"
 
+#include "TeCo/Dialect/TeCo/TeCoDialect.h"
+#include "TeCo/Passes.h"
+
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
   mlir::tpp::registerTppCompilerPasses();
   mlir::tpp::registerTppPassBundlePasses();
+    
+  mlir::teco::registerTeCoCompilerPasses();
+ // mlir::teco::registerTeCoPassBundlePasses();
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::xsmm::XsmmDialect>();
   registry.insert<mlir::check::CheckDialect>();
   registry.insert<mlir::perf::PerfDialect>();
+  registry.insert<mlir::teco::TECODialect>();
   mlir::check::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::perf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tpp::registerTestStructuralMatchers();
   mlir::tpp::registerTestForToForAllRewrite();
+
 
   // Add the following to include *all* MLIR Core dialects, or selectively
   // include what you need like above. You only need to register dialects that

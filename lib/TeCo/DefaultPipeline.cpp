@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TPP/PassBundles.h"
+#include "TeCo/PassBundles.h"
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/InitAllDialects.h"
@@ -21,14 +21,15 @@
 #include "TPP/Dialect/Perf/PerfDialect.h"
 #include "TPP/Dialect/Perf/PerfOps.h"
 #include "TPP/Dialect/Xsmm/XsmmDialect.h"
-#include "TeCo/Dialect/TeCo/TeCoDialect.h"
 #include "TPP/PassUtils.h"
+#include "TeCo/Dialect/TeCo/TeCoDialect.h"
+#include "TeCo/Dialect/TeCo/TeCoOps.h"
 #include "mlir/Transforms/Passes.h"
 
 #include <string>
 
 using namespace mlir;
-using namespace mlir::tpp;
+using namespace mlir::teco;
 
 // Print MLIR before lowering
 llvm::cl::opt<std::string>
@@ -36,32 +37,16 @@ llvm::cl::opt<std::string>
               llvm::cl::desc("Print MLIR to stdout (early, mid, late, llvm)"),
               llvm::cl::init(""));
 
-// Lower Linalg directly to loops without TPP (for validation purposes)
-llvm::cl::opt<bool> linalgToLoops("linalg-to-loops",
-                                  llvm::cl::desc("Lower linalg to loops"),
-                                  llvm::cl::init(false));
-
 // Control parallelism.
 llvm::cl::opt<bool>
     defParallel("def-parallel",
                 llvm::cl::desc("Default pipeline - enable parallel execution"),
                 llvm::cl::init(false));
 
-// Control grid parallelism sizes.
-llvm::cl::list<unsigned>
-    parallelTaskGrid("parallel-task-grid",
-                     llvm::cl::desc("Grid-sizes for parallel tasks"),
-                     llvm::cl::list_init<unsigned>(SmallVector<unsigned>{2, 8}),
-                     llvm::cl::CommaSeparated);
-
-llvm::cl::opt<bool> linalgToVector("linalg-to-vector",
-                                   llvm::cl::desc("Lower linalg to vector"),
-                                   llvm::cl::init(false));
-
 namespace mlir {
-namespace tpp {
+namespace teco {
 #define GEN_PASS_DEF_DEFAULTPIPELINE
-#include "TPP/PassBundles.h.inc"
+#include "TeCo/PassBundles.h.inc"
 } // namespace tpp
 } // namespace mlir
 
@@ -96,7 +81,7 @@ struct DefaultPipeline : public tpp::impl::DefaultPipelineBase<DefaultPipeline>,
     registry.insert<xsmm::XsmmDialect>();
     registry.insert<check::CheckDialect>();
     registry.insert<perf::PerfDialect>();
-    registry.insert<mlir::teco::TECODialect>();
+    registry.insert<teco::TeCoDialect>();
     check::registerBufferizableOpInterfaceExternalModels(registry);
     perf::registerBufferizableOpInterfaceExternalModels(registry);
 
@@ -130,9 +115,7 @@ private:
       pm.addPass(createGpuPipeline(GpuPipelineOptions{gpuBackend}));
     } else {
       // Apply the default preprocessing pass
-      DefaultTppPassesOptions tppDefaultOptions{linalgToLoops, parallelTaskGrid,
-                                                linalgToVector};
-      pm.addPass(createDefaultTppPasses(tppDefaultOptions));
+      pm.addPass(createDefaultTecoPasses());
     }
 
     if (print == PrintStage::Mid)
@@ -147,8 +130,7 @@ private:
 
     // Partial Lowering
     pm.addPass(memref::createExpandStridedMetadataPass());
-    pm.addPass(createConvertTensorToLinalgPass());
-    pm.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
+    pm.addPass(create);
     if (defParallel)
       pm.addPass(createConvertSCFToOpenMPPass());
     pm.addPass(createConvertVectorToSCFPass());
