@@ -8,7 +8,7 @@
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-def TECO_Dialect : Dialect {
+def TeCo_Dialect : Dialect {
   let name = "teco";
   let cppNamespace = "::mlir::teco";
   let summary = [{
@@ -20,7 +20,7 @@ def TECO_Dialect : Dialect {
 // TensorContractionOp
 //===----------------------------------------------------------------------===//
 
-def TECO_ContractionOp : Op<TECO_Dialect, "contract",
+def TeCo_ContractionOp : Op<TeCo_Dialect, "contract",
     [MemoryEffects<[MemWrite, MemRead]>, Terminator]> {
   let summary = [{Contracts two given Tensors}];
   let description = [{

@@ -15,7 +15,7 @@ include "mlir/IR/OpBase.td"
 // TeCo dialect definition.
 //===----------------------------------------------------------------------===//
 
-def TECO_Dialect : Dialect {
+def TeCo_Dialect : Dialect {
     let name = "teco";
     let summary = "Tensor Contraction dialect.";
     let description = [{

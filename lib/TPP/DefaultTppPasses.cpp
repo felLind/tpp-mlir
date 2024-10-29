@@ -49,7 +49,7 @@ struct DefaultTppPasses
     registry.insert<xsmm::XsmmDialect>();
     registry.insert<check::CheckDialect>();
     registry.insert<perf::PerfDialect>();
-    registry.insert<mlir::teco::TECODialect>();
+    registry.insert<mlir::teco::TeCoDialect>();
     check::registerBufferizableOpInterfaceExternalModels(registry);
     perf::registerBufferizableOpInterfaceExternalModels(registry);
 

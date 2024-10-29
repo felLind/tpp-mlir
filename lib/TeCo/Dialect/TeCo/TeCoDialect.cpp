@@ -11,7 +11,7 @@ using namespace mlir;
 using namespace mlir::teco;
 
 
-void TECODialect::initialize() {
+void TeCoDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
 #include "TeCo/Dialect/TeCo/TeCoOps.cpp.inc"
