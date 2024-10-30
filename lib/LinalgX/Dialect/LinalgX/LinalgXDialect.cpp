@@ -2,20 +2,20 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "TeCo/Dialect/TeCo/TeCoDialect.h"
+#include "LinalgX/Dialect/LinalgX/LinalgXDialect.h"
 
-#include "TeCo/Dialect/TeCo/TeCoOps.h"
+#include "LinalgX/Dialect/LinalgX/LinalgXOps.h"
 #include "mlir/Parser/Parser.h"
 
 using namespace mlir;
-using namespace mlir::teco;
+using namespace mlir::linalgx;
 
 
-void TeCoDialect::initialize() {
+void LinalgXDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
-#include "TeCo/Dialect/TeCo/TeCoOps.cpp.inc"
+#include "LinalgX/Dialect/LinalgX/LinalgXOps.cpp.inc"
       >();
 }
 
-#include "TeCo/Dialect/TeCo/TeCoOpsDialect.cpp.inc"
+#include "LinalgX/Dialect/LinalgX/LinalgXOpsDialect.cpp.inc"

@@ -1,3 +1,1 @@
-add_subdirectory(TPP)
-
 add_subdirectory(LinalgX)

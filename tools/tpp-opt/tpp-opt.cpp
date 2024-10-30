@@ -31,22 +31,21 @@
 #include "TPP/PassBundles.h"
 #include "TPP/Passes.h"
 
-#include "TeCo/Dialect/TeCo/TeCoDialect.h"
-#include "TeCo/Passes.h"
+#include "LinalgX/Dialect/LinalgX/LinalgXDialect.h"
+#include "LinalgX/Passes.h"
 
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
   mlir::tpp::registerTppCompilerPasses();
   mlir::tpp::registerTppPassBundlePasses();
     
-  mlir::teco::registerTeCoCompilerPasses();
- // mlir::teco::registerTeCoPassBundlePasses();
+  mlir::linalgx::registerLinalgXCompilerPasses();
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::xsmm::XsmmDialect>();
   registry.insert<mlir::check::CheckDialect>();
   registry.insert<mlir::perf::PerfDialect>();
-  registry.insert<mlir::teco::TeCoDialect>();
+  registry.insert<mlir::linalgx::LinalgXDialect>();
   mlir::check::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::perf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tpp::registerTestStructuralMatchers();

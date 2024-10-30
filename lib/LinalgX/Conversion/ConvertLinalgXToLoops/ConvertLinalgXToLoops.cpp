@@ -1,8 +1,8 @@
 //
 // Created by felix on 30.09.24.
 //
-#include "TeCo/Dialect/TeCo/TeCoOps.h"
-#include "TeCo/Passes.h"
+#include "LinalgX/Dialect/LinalgX/LinalgXOps.h"
+#include "LinalgX/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -16,43 +16,43 @@
 using namespace mlir;
 
 namespace mlir {
-namespace teco {
-#define GEN_PASS_DEF_CONVERTTECOTOLOOPS
-#include "TeCo/Passes.h.inc"
-} // namespace teco
+namespace linalgx {
+#define GEN_PASS_DEF_CONVERTLINALGXTOLOOPS
+#include "LinalgX/Passes.h.inc"
+} // namespace linalgX
 } // namespace mlir
 
 namespace {
 
 
-struct ConvertContractionOp
-    : public OpRewritePattern<teco::ContractionOp> {
-  using OpRewritePattern<teco::ContractionOp>::OpRewritePattern;
+struct ConvertBinaryContractionOp
+    : public OpRewritePattern<linalgx::BinaryContractionOp> {
+  using OpRewritePattern<linalgx::BinaryContractionOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(teco::ContractionOp contractionOp,
+  LogicalResult matchAndRewrite(linalgx::BinaryContractionOp binaryContractionOp,
                                 PatternRewriter &rewriter) const override {
-    Location loc = contractionOp.getLoc();
+    Location loc = binaryContractionOp.getLoc();
    
     Value zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
     Value twenty = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 20);
     Value twentyfour = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 24);
 
-    auto lhsTensorType = llvm::cast<ShapedType>(contractionOp.getLhs().getType());
+    auto lhsTensorType = llvm::cast<ShapedType>(binaryContractionOp.getLhs().getType());
     auto lhsMemrefType =
       MemRefType::get(lhsTensorType.getShape(), lhsTensorType.getElementType());
 
-    auto rhsTensorType = llvm::cast<ShapedType>(contractionOp.getRhs().getType());
+    auto rhsTensorType = llvm::cast<ShapedType>(binaryContractionOp.getRhs().getType());
     auto rhsMemrefType =
      MemRefType::get(rhsTensorType.getShape(), rhsTensorType.getElementType());  
 
-    auto accTensorType = llvm::cast<ShapedType>(contractionOp.getAcc().getType());
+    auto accTensorType = llvm::cast<ShapedType>(binaryContractionOp.getAcc().getType());
     auto accMemrefType =
       MemRefType::get(accTensorType.getShape(), accTensorType.getElementType());  
 
-    auto lhsBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, lhsMemrefType, contractionOp.getLhs());
-    auto rhsBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, rhsMemrefType, contractionOp.getRhs());
-    auto accBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, accMemrefType, contractionOp.getAcc());
+    auto lhsBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, lhsMemrefType, binaryContractionOp.getLhs());
+    auto rhsBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, rhsMemrefType, binaryContractionOp.getRhs());
+    auto accBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, accMemrefType, binaryContractionOp.getAcc());
     auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, accMemrefType);
     rewriter.create<mlir::memref::CopyOp>(loc, accBuffer, allocBuffer);
     
@@ -83,22 +83,22 @@ struct ConvertContractionOp
         });
 
     Value result = rewriter.create<mlir::bufferization::ToTensorOp>(loc, accTensorType, allocBuffer, true);
-    rewriter.create<func::ReturnOp>(loc, result);
-    rewriter.eraseOp(contractionOp);
+    SmallVector<Value> results({result});
+    rewriter.replaceOp(binaryContractionOp, results);
     return success();
   }
 };
 
-void populateTeCoToLoopsPatterns(RewritePatternSet &patterns) {
-  patterns.add<ConvertContractionOp>(
+void populateLinalgXToLoopsPatterns(RewritePatternSet &patterns) {
+  patterns.add<ConvertBinaryContractionOp>(
       patterns.getContext());
 }
 
-struct ConvertTeCoToLoops
-    : public teco::impl::ConvertTeCoToLoopsBase<ConvertTeCoToLoops> {
+struct ConvertLinalgXToLoops
+    : public linalgx::impl::ConvertLinalgXToLoopsBase<ConvertLinalgXToLoops> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    populateTeCoToLoopsPatterns(patterns);
+    populateLinalgXToLoopsPatterns(patterns);
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
   }
 };

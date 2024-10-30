@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef TECO_PASSES_H
-#define TECO_PASSES_H
+#ifndef LINALGX_PASSES_H
+#define LINALGX_PASSES_H
 
 #include "mlir/Pass/Pass.h"
 
@@ -75,16 +75,16 @@ class XeGPUDialect;
 } // namespace mlir
 
 namespace mlir {
-namespace teco {
+namespace linalgx {
 // TODO: This should be per-pass so that pass can live
 // in their namespace (xsmm, check...). All the passes
 // are now in tpp.
 #define GEN_PASS_DECL
-#include "TeCo/Passes.h.inc"
+#include "LinalgX/Passes.h.inc"
 
 #define GEN_PASS_REGISTRATION
-#include "TeCo/Passes.h.inc"
-} // namespace tpp
+#include "LinalgX/Passes.h.inc"
+} // namespace linalgx
 } // namespace mlir
 
-#endif // TECO_PASSES_H
+#endif // LINALGX_PASSES_H

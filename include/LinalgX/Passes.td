@@ -6,18 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef TECO_DIALECT_TECO_PASSES
-#define TECO_DIALECT_TECO_PASSES
+#ifndef LINALGX_DIALECT_LINALGX_PASSES
+#define LINALGX_DIALECT_LINALGX_PASSES
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertTeCoToLoops : Pass<"convert-teco-to-loops", "func::FuncOp"> {
-  let summary = "Convert teco to loops";
+def ConvertLinalgXToLoops : Pass<"convert-linalgx-to-loops", "func::FuncOp"> {
+  let summary = "Convert LinalgX to loops";
   let description = [{
-    Convert teco operations to SCF loops.
+    Convert LinalgX operations to SCF loops.
   }];
   let dependentDialects = ["scf::SCFDialect",
   "bufferization::BufferizationDialect"];
 }
 
-#endif // TECO_DIALECT_TECO_PASSES
+#endif // LINALGX_DIALECT_LINALGX_PASSES

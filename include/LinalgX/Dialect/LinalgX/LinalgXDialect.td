@@ -6,22 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef TECO_TECO_DIALECT
-#define TECO_TECO_DIALECT
+#ifndef LINALGX_LINALGX_DIALECT
+#define LINALGX_LINALGX_DIALECT
 
 include "mlir/IR/OpBase.td"
 
 //===----------------------------------------------------------------------===//
-// TeCo dialect definition.
+// LinalgX dialect definition.
 //===----------------------------------------------------------------------===//
 
-def TeCo_Dialect : Dialect {
-    let name = "teco";
-    let summary = "Tensor Contraction dialect.";
+def LinalgX_Dialect : Dialect {
+    let name = "linalgx";
+    let summary = "Linalg Extension for Tensor Contraction.";
     let description = [{
         This dialect provides a function for tensorn contraction.
     }];
-    let cppNamespace = "::mlir::teco";
+    let cppNamespace = "::mlir::linalgx";
     let useDefaultTypePrinterParser = 1;
     let dependentDialects = [
     "affine::AffineDialect", "memref::MemRefDialect", "tensor::TensorDialect",
@@ -33,7 +33,7 @@ def TeCo_Dialect : Dialect {
 // Base operation definition.
 //===----------------------------------------------------------------------===//
 
-class TeCo_Op<string mnemonic, list<Trait> traits = []> :
-        Op<TeCo_Dialect, mnemonic, traits>;
+class LinalgX_Op<string mnemonic, list<Trait> traits = []> :
+        Op<LinalgX_Dialect, mnemonic, traits>;
 
-#endif // TECO_TECO_DIALECT
+#endif // LINALGX_LINALGX_DIALECT

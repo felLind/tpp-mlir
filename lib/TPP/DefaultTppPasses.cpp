@@ -8,7 +8,7 @@
 
 #include "TPP/PassBundles.h"
 
-#include "TeCo/Passes.h"
+#include "LinalgX/Passes.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/Passes.h"
@@ -22,7 +22,7 @@
 #include "TPP/Dialect/Perf/BufferizableOpInterfaceImpl.h"
 #include "TPP/Dialect/Perf/PerfDialect.h"
 #include "TPP/Dialect/Xsmm/XsmmDialect.h"
-#include "TeCo/Dialect/TeCo/TeCoDialect.h"
+#include "LinalgX/Dialect/LinalgX/LinalgXDialect.h"
 #include "TPP/PassUtils.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -49,7 +49,7 @@ struct DefaultTppPasses
     registry.insert<xsmm::XsmmDialect>();
     registry.insert<check::CheckDialect>();
     registry.insert<perf::PerfDialect>();
-    registry.insert<mlir::teco::TeCoDialect>();
+    registry.insert<mlir::linalgx::LinalgXDialect>();
     check::registerBufferizableOpInterfaceExternalModels(registry);
     perf::registerBufferizableOpInterfaceExternalModels(registry);
 
@@ -72,7 +72,7 @@ struct DefaultTppPasses
 
 private:
   void constructPipeline() override {
-    pm.addPass(mlir::teco::createConvertTeCoToLoops());
+    pm.addPass(mlir::linalgx::createConvertLinalgXToLoops());
     if (linalgToLoops) {
       // Lower linalg directly to loops.
       // Skip all TPP transformations.
