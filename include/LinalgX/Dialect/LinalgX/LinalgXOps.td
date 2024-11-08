@@ -24,17 +24,17 @@ def LinalgX_BinaryContractionOp : Op<LinalgX_Dialect, "contract_binary",
     [MemoryEffects<[MemWrite, MemRead]>]> {
   let summary = [{Contracts two given Tensors}];
   let description = [{
-    Contract two given tensors based on the .
+    Contract two given tensors based on the given einsum-tree.
 
-    Results in a tensor with 6 dimensions
 
     ```mlir
-    %result = linalgx.contract(%tree, %lhs, %rhs, %acc) : tensor<?xf32>, tensor<?xf32>, tensor<?xf32>
+    %result = linalgx.contract_binary(%tree,%dims, %lhs, %rhs, %acc) : (tensor<?xf32>, tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
     ```
   }];
 
   let arguments = (ins
    StrAttr:$tree,
+   StrAttr:$dims,
    F32Tensor:$lhs,
    F32Tensor:$rhs,
    F32Tensor:$acc   
@@ -44,7 +44,7 @@ def LinalgX_BinaryContractionOp : Op<LinalgX_Dialect, "contract_binary",
 
 
    let assemblyFormat = [{
-    `(` $tree `,` $lhs `,` $rhs `,` $acc `)`
+    `(` $tree `,` $dims `,` $lhs `,` $rhs `,` $acc `)`
     attr-dict `:` `(` type($lhs) `,` type($rhs) `,` type($acc) `)` `->` type($result)
   }] ;
 

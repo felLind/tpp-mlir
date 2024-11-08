@@ -35,9 +35,7 @@ struct ConvertBinaryContractionOp
    
     Value zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
-    Value twenty = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 20);
-    Value twentyfour = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 24);
-
+  
     auto lhsTensorType = llvm::cast<ShapedType>(binaryContractionOp.getLhs().getType());
     auto lhsMemrefType =
       MemRefType::get(lhsTensorType.getShape(), lhsTensorType.getElementType());
@@ -56,23 +54,55 @@ struct ConvertBinaryContractionOp
     auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, accMemrefType);
     rewriter.create<mlir::memref::CopyOp>(loc, accBuffer, allocBuffer);
     
-    SmallVector<Value> lbs(7, zero);
-    SmallVector<Value> steps(7, one);
     SmallVector<Value> ubs;
-    ubs.push_back(twentyfour);
-    ubs.push_back(twenty);
-    ubs.push_back(twenty);
-    ubs.push_back(twentyfour);
-    ubs.push_back(twenty);
-    ubs.push_back(twenty);
-    ubs.push_back(twentyfour);
+    int dimCount = 0;
+    for(StringRef x : llvm::split(binaryContractionOp.getDims(), ',')){
+      ubs.push_back(rewriter.create<mlir::arith::ConstantIndexOp>(loc, atoi(x.data())));
+      dimCount++;
+    } 
 
+    SmallVector<Value> lbs(dimCount, zero);
+    SmallVector<Value> steps(dimCount, one);
+ 
     (void)mlir::scf::buildLoopNest(
         rewriter, loc, lbs, ubs, steps,
         [&](OpBuilder &b, Location loc, ValueRange localIvs) {
-          SmallVector<Value, 4> lhsRange({localIvs[1],localIvs[2],localIvs[6],localIvs[5]});
-          SmallVector<Value, 4> rhsRange({localIvs[0],localIvs[3],localIvs[4],localIvs[6]});
-          SmallVector<Value, 8> allocRange({localIvs[0],localIvs[1],localIvs[2],localIvs[3],localIvs[4],localIvs[5]});
+             
+          std::string tree = binaryContractionOp.getTree().str();
+
+          std::size_t endLHS = tree.find("]");
+          
+          SmallVector<Value> lhsRange;
+
+          std::string lhs = tree.substr(1, endLHS - 1);
+
+          for(StringRef x : llvm::split(lhs, ',')){
+            lhsRange.push_back(localIvs[atoi(x.data())]);
+          }
+
+          SmallVector<Value> rhsRange;
+
+          tree = tree.substr(endLHS + 3);   
+
+          std::size_t endRHS = tree.find("]");     
+
+          std::string rhs = tree.substr(0, endRHS);
+
+          for(StringRef x : llvm::split(rhs, ',')){
+            rhsRange.push_back(localIvs[atoi(x.data())]);
+          }
+
+
+          SmallVector<Value> allocRange;
+
+          tree = tree.substr(endRHS + 4);   
+
+          std::string root = tree.substr(0, tree.size() - 1);
+
+          for(StringRef x : llvm::split(root, ',')){
+            allocRange.push_back(localIvs[atoi(x.data())]);
+          }
+
           Value lhsScalar = b.create<memref::LoadOp>(loc, lhsBuffer, lhsRange);
           Value rhsScalar = b.create<memref::LoadOp>(loc, rhsBuffer, rhsRange);
           Value allocScalar = b.create<memref::LoadOp>(loc, allocBuffer, allocRange);
@@ -102,5 +132,6 @@ struct ConvertLinalgXToLoops
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
   }
 };
+
 
 } // namespace
