@@ -6,22 +6,22 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LINALGX_LINALGX_DIALECT
-#define LINALGX_LINALGX_DIALECT
+#ifndef EINSUM_EINSUM_DIALECT
+#define EINSUM_EINSUM_DIALECT
 
 include "mlir/IR/OpBase.td"
 
 //===----------------------------------------------------------------------===//
-// LinalgX dialect definition.
+// Einsum dialect definition.
 //===----------------------------------------------------------------------===//
 
-def LinalgX_Dialect : Dialect {
-    let name = "linalgx";
-    let summary = "Linalg Extension for Tensor Contraction.";
+def Einsum_Dialect : Dialect {
+    let name = "einsum";
+    let summary = "Einsum dialect for Tensor Contraction.";
     let description = [{
-        This dialect provides a function for tensorn contraction.
+        This dialect provides functions for tensor contraction.
     }];
-    let cppNamespace = "::mlir::linalgx";
+    let cppNamespace = "::mlir::einsum";
     let useDefaultTypePrinterParser = 1;
     let dependentDialects = [
     "affine::AffineDialect", "memref::MemRefDialect", "tensor::TensorDialect",
@@ -33,7 +33,7 @@ def LinalgX_Dialect : Dialect {
 // Base operation definition.
 //===----------------------------------------------------------------------===//
 
-class LinalgX_Op<string mnemonic, list<Trait> traits = []> :
-        Op<LinalgX_Dialect, mnemonic, traits>;
+class Einsum_Op<string mnemonic, list<Trait> traits = []> :
+        Op<Einsum_Dialect, mnemonic, traits>;
 
-#endif // LINALGX_LINALGX_DIALECT
+#endif // EINSUM_EINSUM_DIALECT

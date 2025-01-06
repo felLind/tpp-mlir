@@ -1,8 +1,8 @@
 //
 // Created by felix on 30.09.24.
 //
-#include "LinalgX/Dialect/LinalgX/LinalgXOps.h"
-#include "LinalgX/Passes.h"
+#include "Einsum/Dialect/Einsum/EinsumOps.h"
+#include "Einsum/Passes.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -16,20 +16,20 @@
 using namespace mlir;
 
 namespace mlir {
-namespace linalgx {
-#define GEN_PASS_DEF_CONVERTLINALGXTOLOOPS
-#include "LinalgX/Passes.h.inc"
-} // namespace linalgX
+namespace einsum {
+#define GEN_PASS_DEF_CONVERTEINSUMTOLOOPS
+#include "Einsum/Passes.h.inc"
+} // namespace einsum
 } // namespace mlir
 
 namespace {
 
 
 struct ConvertBinaryContractionOp
-    : public OpRewritePattern<linalgx::BinaryContractionOp> {
-  using OpRewritePattern<linalgx::BinaryContractionOp>::OpRewritePattern;
+    : public OpRewritePattern<einsum::BinaryContractionOp> {
+  using OpRewritePattern<einsum::BinaryContractionOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(linalgx::BinaryContractionOp binaryContractionOp,
+  LogicalResult matchAndRewrite(einsum::BinaryContractionOp binaryContractionOp,
                                 PatternRewriter &rewriter) const override {
     Location loc = binaryContractionOp.getLoc();
    
@@ -55,14 +55,12 @@ struct ConvertBinaryContractionOp
     rewriter.create<mlir::memref::CopyOp>(loc, accBuffer, allocBuffer);
     
     SmallVector<Value> ubs;
-    int dimCount = 0;
     for(StringRef x : llvm::split(binaryContractionOp.getDims(), ',')){
       ubs.push_back(rewriter.create<mlir::arith::ConstantIndexOp>(loc, atoi(x.data())));
-      dimCount++;
     } 
 
-    SmallVector<Value> lbs(dimCount, zero);
-    SmallVector<Value> steps(dimCount, one);
+    SmallVector<Value> lbs(ubs.size(), zero);
+    SmallVector<Value> steps(ubs.size(), one);
  
     (void)mlir::scf::buildLoopNest(
         rewriter, loc, lbs, ubs, steps,
@@ -92,7 +90,6 @@ struct ConvertBinaryContractionOp
             rhsRange.push_back(localIvs[atoi(x.data())]);
           }
 
-
           SmallVector<Value> allocRange;
 
           tree = tree.substr(endRHS + 4);   
@@ -119,16 +116,16 @@ struct ConvertBinaryContractionOp
   }
 };
 
-void populateLinalgXToLoopsPatterns(RewritePatternSet &patterns) {
+void populateEinsumToLoopsPatterns(RewritePatternSet &patterns) {
   patterns.add<ConvertBinaryContractionOp>(
       patterns.getContext());
 }
 
-struct ConvertLinalgXToLoops
-    : public linalgx::impl::ConvertLinalgXToLoopsBase<ConvertLinalgXToLoops> {
+struct ConvertEinsumToLoops
+    : public einsum::impl::ConvertEinsumToLoopsBase<ConvertEinsumToLoops> {
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
-    populateLinalgXToLoopsPatterns(patterns);
+    populateEinsumToLoopsPatterns(patterns);
     (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
   }
 };

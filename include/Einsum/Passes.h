@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LINALGX_PASSES_H
-#define LINALGX_PASSES_H
+#ifndef EINSUM_PASSES_H
+#define EINSUM_PASSES_H
 
 #include "mlir/Pass/Pass.h"
 
@@ -75,16 +75,16 @@ class XeGPUDialect;
 } // namespace mlir
 
 namespace mlir {
-namespace linalgx {
+namespace einsum {
 // TODO: This should be per-pass so that pass can live
 // in their namespace (xsmm, check...). All the passes
 // are now in tpp.
 #define GEN_PASS_DECL
-#include "LinalgX/Passes.h.inc"
+#include "Einsum/Passes.h.inc"
 
 #define GEN_PASS_REGISTRATION
-#include "LinalgX/Passes.h.inc"
-} // namespace linalgx
+#include "Einsum/Passes.h.inc"
+} // namespace einsum
 } // namespace mlir
 
-#endif // LINALGX_PASSES_H
+#endif // EINSUM_PASSES_H

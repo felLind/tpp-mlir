@@ -2,17 +2,17 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#ifndef LINALGX_DIALECT_LINALGX_LINALGXOPS
-#define LINALGX_DIALECT_LINALGX_LINALGXOPS
+#ifndef EINSUM_DIALECT_EINSUM_EINSUMOPS
+#define EINSUM_DIALECT_EINSUM_EINSUMOPS
 
 include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-def LinalgX_Dialect : Dialect {
-  let name = "linalgx";
-  let cppNamespace = "::mlir::linalgx";
+def Einsum_Dialect : Dialect {
+  let name = "einsum";
+  let cppNamespace = "::mlir::einsum";
   let summary = [{
-    Linalg Extension for Tensor Contraction.
+    Einsum dialect for Tensor Contraction.
   }];
 }
 
@@ -20,7 +20,7 @@ def LinalgX_Dialect : Dialect {
 // BinaryTensorContractionOp
 //===----------------------------------------------------------------------===//
 
-def LinalgX_BinaryContractionOp : Op<LinalgX_Dialect, "contract_binary",
+def Einsum_BinaryContractionOp : Op<Einsum_Dialect, "contract_binary",
     [MemoryEffects<[MemWrite, MemRead]>]> {
   let summary = [{Contracts two given Tensors}];
   let description = [{
@@ -28,7 +28,7 @@ def LinalgX_BinaryContractionOp : Op<LinalgX_Dialect, "contract_binary",
 
 
     ```mlir
-    %result = linalgx.contract_binary(%tree,%dims, %lhs, %rhs, %acc) : (tensor<?xf32>, tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
+    %result = einsum.contract_binary(%tree,%dims, %lhs, %rhs, %acc) : (tensor<?xf32>, tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
     ```
   }];
 

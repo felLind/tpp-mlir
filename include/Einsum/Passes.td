@@ -6,18 +6,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LINALGX_DIALECT_LINALGX_PASSES
-#define LINALGX_DIALECT_LINALGX_PASSES
+#ifndef EINSUM_DIALECT_EINSUM_PASSES
+#define EINSUM_DIALECT_EINSUM_PASSES
 
 include "mlir/Pass/PassBase.td"
 
-def ConvertLinalgXToLoops : Pass<"convert-linalgx-to-loops", "func::FuncOp"> {
-  let summary = "Convert LinalgX to loops";
+def ConvertEinsumToLoops : Pass<"convert-einsum-to-loops", "func::FuncOp"> {
+  let summary = "Convert Einsum to loops";
   let description = [{
-    Convert LinalgX operations to SCF loops.
+    Convert Einsum operations to SCF loops.
   }];
   let dependentDialects = ["scf::SCFDialect",
   "bufferization::BufferizationDialect"];
 }
 
-#endif // LINALGX_DIALECT_LINALGX_PASSES
+#endif // EINSUM_DIALECT_EINSUM_PASSES

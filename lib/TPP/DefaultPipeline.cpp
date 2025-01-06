@@ -21,7 +21,7 @@
 #include "TPP/Dialect/Perf/PerfDialect.h"
 #include "TPP/Dialect/Perf/PerfOps.h"
 #include "TPP/Dialect/Xsmm/XsmmDialect.h"
-#include "LinalgX/Dialect/LinalgX/LinalgXDialect.h"
+#include "Einsum/Dialect/Einsum/EinsumDialect.h"
 #include "TPP/PassUtils.h"
 #include "mlir/Transforms/Passes.h"
 
@@ -96,7 +96,7 @@ struct DefaultPipeline : public tpp::impl::DefaultPipelineBase<DefaultPipeline>,
     registry.insert<xsmm::XsmmDialect>();
     registry.insert<check::CheckDialect>();
     registry.insert<perf::PerfDialect>();
-    registry.insert<mlir::linalgx::LinalgXDialect>();
+    registry.insert<mlir::einsum::EinsumDialect>();
     check::registerBufferizableOpInterfaceExternalModels(registry);
     perf::registerBufferizableOpInterfaceExternalModels(registry);
 

@@ -31,21 +31,21 @@
 #include "TPP/PassBundles.h"
 #include "TPP/Passes.h"
 
-#include "LinalgX/Dialect/LinalgX/LinalgXDialect.h"
-#include "LinalgX/Passes.h"
+#include "Einsum/Dialect/Einsum/EinsumDialect.h"
+#include "Einsum/Passes.h"
 
 int main(int argc, char **argv) {
   mlir::registerAllPasses();
   mlir::tpp::registerTppCompilerPasses();
   mlir::tpp::registerTppPassBundlePasses();
     
-  mlir::linalgx::registerLinalgXCompilerPasses();
+  mlir::einsum::registerEinsumCompilerPasses();
 
   mlir::DialectRegistry registry;
   registry.insert<mlir::xsmm::XsmmDialect>();
   registry.insert<mlir::check::CheckDialect>();
   registry.insert<mlir::perf::PerfDialect>();
-  registry.insert<mlir::linalgx::LinalgXDialect>();
+  registry.insert<mlir::einsum::EinsumDialect>();
   mlir::check::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::perf::registerBufferizableOpInterfaceExternalModels(registry);
   mlir::tpp::registerTestStructuralMatchers();

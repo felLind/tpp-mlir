@@ -2,20 +2,20 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-#include "LinalgX/Dialect/LinalgX/LinalgXDialect.h"
+#include "Einsum/Dialect/Einsum/EinsumDialect.h"
 
-#include "LinalgX/Dialect/LinalgX/LinalgXOps.h"
+#include "Einsum/Dialect/Einsum/EinsumOps.h"
 #include "mlir/Parser/Parser.h"
 
 using namespace mlir;
-using namespace mlir::linalgx;
+using namespace mlir::einsum;
 
 
-void LinalgXDialect::initialize() {
+void EinsumDialect::initialize() {
   addOperations<
 #define GET_OP_LIST
-#include "LinalgX/Dialect/LinalgX/LinalgXOps.cpp.inc"
+#include "Einsum/Dialect/Einsum/EinsumOps.cpp.inc"
       >();
 }
 
-#include "LinalgX/Dialect/LinalgX/LinalgXOpsDialect.cpp.inc"
+#include "Einsum/Dialect/Einsum/EinsumOpsDialect.cpp.inc"
