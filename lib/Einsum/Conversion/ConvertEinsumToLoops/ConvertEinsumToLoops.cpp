@@ -33,6 +33,8 @@ struct ConvertBinaryContractionOp
                                 PatternRewriter &rewriter) const override {
     Location loc = binaryContractionOp.getLoc();
    
+    DictionaryAttr config = binaryContractionOp.getConfig();
+    
     Value zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
   
@@ -55,10 +57,11 @@ struct ConvertBinaryContractionOp
     rewriter.create<mlir::memref::CopyOp>(loc, accBuffer, allocBuffer);
     
     SmallVector<Value> ubs;
-    for(StringRef x : llvm::split(binaryContractionOp.getDims(), ',')){
+    auto dim_sizes =  ::llvm::dyn_cast<StringAttr>(config.get("dim_sizes"));
+    for(StringRef x : llvm::split(dim_sizes, ',')){
       ubs.push_back(rewriter.create<mlir::arith::ConstantIndexOp>(loc, atoi(x.data())));
-    } 
-
+    }  
+ 
     SmallVector<Value> lbs(ubs.size(), zero);
     SmallVector<Value> steps(ubs.size(), one);
  
@@ -66,7 +69,7 @@ struct ConvertBinaryContractionOp
         rewriter, loc, lbs, ubs, steps,
         [&](OpBuilder &b, Location loc, ValueRange localIvs) {
              
-          std::string tree = binaryContractionOp.getTree().str();
+          auto tree = ::llvm::dyn_cast<StringAttr>(config.get("tree")).str();
 
           std::size_t endLHS = tree.find("]");
           
@@ -108,10 +111,11 @@ struct ConvertBinaryContractionOp
          Value sum = b.create<arith::AddFOp>(loc, allocScalar, prod);                                                                
          b.create<memref::StoreOp>(loc, sum, allocBuffer, allocRange);
         });
-
+ 
     Value result = rewriter.create<mlir::bufferization::ToTensorOp>(loc, accTensorType, allocBuffer, true);
     SmallVector<Value> results({result});
     rewriter.replaceOp(binaryContractionOp, results);
+    
     return success();
   }
 };

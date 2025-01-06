@@ -28,13 +28,12 @@ def Einsum_BinaryContractionOp : Op<Einsum_Dialect, "contract_binary",
 
 
     ```mlir
-    %result = einsum.contract_binary(%tree,%dims, %lhs, %rhs, %acc) : (tensor<?xf32>, tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
+    %result = einsum.contract_binary(%config, %lhs, %rhs, %acc) : (tensor<?xf32>, tensor<?xf32>, tensor<?xf32>) -> tensor<?xf32>
     ```
   }];
 
   let arguments = (ins
-   StrAttr:$tree,
-   StrAttr:$dims,
+   DictionaryAttr:$config,
    F32Tensor:$lhs,
    F32Tensor:$rhs,
    F32Tensor:$acc   
@@ -44,7 +43,7 @@ def Einsum_BinaryContractionOp : Op<Einsum_Dialect, "contract_binary",
 
 
    let assemblyFormat = [{
-    `(` $tree `,` $dims `,` $lhs `,` $rhs `,` $acc `)`
+    `(` $config`,` $lhs `,` $rhs `,` $acc `)`
     attr-dict `:` `(` type($lhs) `,` type($rhs) `,` type($acc) `)` `->` type($result)
   }] ;
 
