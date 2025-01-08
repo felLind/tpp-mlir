@@ -24,6 +24,12 @@ namespace einsum {
 
 namespace {
 
+static bool validateConfig(DictionaryAttr config) {
+  bool validationResult = true;
+  validationResult &= config.contains("tree");
+  validationResult &= config.contains("dim_sizes");
+  return validationResult;
+}
 
 struct ConvertBinaryContractionOp
     : public OpRewritePattern<einsum::BinaryContractionOp> {
@@ -35,26 +41,30 @@ struct ConvertBinaryContractionOp
    
     DictionaryAttr config = binaryContractionOp.getConfig();
     
+    if (!validateConfig(config)) {
+      return failure();
+    }
+
     Value zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
   
-    auto lhsTensorType = llvm::cast<ShapedType>(binaryContractionOp.getLhs().getType());
-    auto lhsMemrefType =
-      MemRefType::get(lhsTensorType.getShape(), lhsTensorType.getElementType());
+    auto leftTensorType = llvm::cast<ShapedType>(binaryContractionOp.getLeft().getType());
+    auto leftMemrefType =
+      MemRefType::get(leftTensorType.getShape(), leftTensorType.getElementType());
 
-    auto rhsTensorType = llvm::cast<ShapedType>(binaryContractionOp.getRhs().getType());
-    auto rhsMemrefType =
-     MemRefType::get(rhsTensorType.getShape(), rhsTensorType.getElementType());  
+    auto rightTensorType = llvm::cast<ShapedType>(binaryContractionOp.getRight().getType());
+    auto rightMemrefType =
+     MemRefType::get(rightTensorType.getShape(), rightTensorType.getElementType());  
 
-    auto accTensorType = llvm::cast<ShapedType>(binaryContractionOp.getAcc().getType());
-    auto accMemrefType =
-      MemRefType::get(accTensorType.getShape(), accTensorType.getElementType());  
+    auto outTensorType = llvm::cast<ShapedType>(binaryContractionOp.getOut().getType());
+    auto outMemrefType =
+      MemRefType::get(outTensorType.getShape(), outTensorType.getElementType());  
 
-    auto lhsBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, lhsMemrefType, binaryContractionOp.getLhs());
-    auto rhsBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, rhsMemrefType, binaryContractionOp.getRhs());
-    auto accBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, accMemrefType, binaryContractionOp.getAcc());
-    auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, accMemrefType);
-    rewriter.create<mlir::memref::CopyOp>(loc, accBuffer, allocBuffer);
+    auto leftBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, leftMemrefType, binaryContractionOp.getLeft());
+    auto rightBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, rightMemrefType, binaryContractionOp.getRight());
+    auto outBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, outMemrefType, binaryContractionOp.getOut());
+    auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, outMemrefType);
+    rewriter.create<mlir::memref::CopyOp>(loc, outBuffer, allocBuffer);
     
     SmallVector<Value> ubs;
     auto dim_sizes =  ::llvm::dyn_cast<StringAttr>(config.get("dim_sizes"));
@@ -71,31 +81,31 @@ struct ConvertBinaryContractionOp
              
           auto tree = ::llvm::dyn_cast<StringAttr>(config.get("tree")).str();
 
-          std::size_t endLHS = tree.find("]");
+          std::size_t endLeft = tree.find("]");
           
-          SmallVector<Value> lhsRange;
+          SmallVector<Value> leftRange;
 
-          std::string lhs = tree.substr(1, endLHS - 1);
+          std::string left = tree.substr(1, endLeft - 1);
 
-          for(StringRef x : llvm::split(lhs, ',')){
-            lhsRange.push_back(localIvs[atoi(x.data())]);
+          for(StringRef x : llvm::split(left, ',')){
+            leftRange.push_back(localIvs[atoi(x.data())]);
           }
 
-          SmallVector<Value> rhsRange;
+          SmallVector<Value> rightRange;
 
-          tree = tree.substr(endLHS + 3);   
+          tree = tree.substr(endLeft + 3);   
 
-          std::size_t endRHS = tree.find("]");     
+          std::size_t endRight = tree.find("]");     
 
-          std::string rhs = tree.substr(0, endRHS);
+          std::string right = tree.substr(0, endRight);
 
-          for(StringRef x : llvm::split(rhs, ',')){
-            rhsRange.push_back(localIvs[atoi(x.data())]);
+          for(StringRef x : llvm::split(right, ',')){
+            rightRange.push_back(localIvs[atoi(x.data())]);
           }
 
           SmallVector<Value> allocRange;
 
-          tree = tree.substr(endRHS + 4);   
+          tree = tree.substr(endRight + 4);   
 
           std::string root = tree.substr(0, tree.size() - 1);
 
@@ -103,16 +113,16 @@ struct ConvertBinaryContractionOp
             allocRange.push_back(localIvs[atoi(x.data())]);
           }
 
-          Value lhsScalar = b.create<memref::LoadOp>(loc, lhsBuffer, lhsRange);
-          Value rhsScalar = b.create<memref::LoadOp>(loc, rhsBuffer, rhsRange);
+          Value leftScalar = b.create<memref::LoadOp>(loc, leftBuffer, leftRange);
+          Value rightScalar = b.create<memref::LoadOp>(loc, rightBuffer, rightRange);
           Value allocScalar = b.create<memref::LoadOp>(loc, allocBuffer, allocRange);
          
-         Value prod = b.create<arith::MulFOp>(loc, lhsScalar, rhsScalar);
+         Value prod = b.create<arith::MulFOp>(loc, leftScalar, rightScalar);
          Value sum = b.create<arith::AddFOp>(loc, allocScalar, prod);                                                                
          b.create<memref::StoreOp>(loc, sum, allocBuffer, allocRange);
         });
  
-    Value result = rewriter.create<mlir::bufferization::ToTensorOp>(loc, accTensorType, allocBuffer, true);
+    Value result = rewriter.create<mlir::bufferization::ToTensorOp>(loc, outTensorType, allocBuffer, true);
     SmallVector<Value> results({result});
     rewriter.replaceOp(binaryContractionOp, results);
     
