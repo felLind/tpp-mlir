@@ -17,7 +17,8 @@ def ConvertEinsumToLoops : Pass<"convert-einsum-to-loops", "func::FuncOp"> {
     Convert Einsum operations to SCF loops.
   }];
   let dependentDialects = ["scf::SCFDialect",
-  "bufferization::BufferizationDialect"];
+  "bufferization::BufferizationDialect",
+  "xsmm::XsmmDialect"];
 }
 
 #endif // EINSUM_DIALECT_EINSUM_PASSES

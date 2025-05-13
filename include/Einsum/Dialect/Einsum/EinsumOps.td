@@ -34,12 +34,12 @@ def Einsum_BinaryContractionOp : Op<Einsum_Dialect, "contract_binary",
 
   let arguments = (ins
    DictionaryAttr:$config,
-   F32Tensor:$left,
-   F32Tensor:$right,
-   F32Tensor:$out   
+   F32MemRef:$left,
+   F32MemRef:$right,
+   F32MemRef:$out   
   );
 
-  let results = (outs F32Tensor:$result);
+  let results = (outs F32MemRef:$result);
 
 
    let assemblyFormat = [{

@@ -25,7 +25,8 @@ def Einsum_Dialect : Dialect {
     let useDefaultTypePrinterParser = 1;
     let dependentDialects = [
     "affine::AffineDialect", "memref::MemRefDialect", "tensor::TensorDialect",
-    "arith::ArithDialect", "bufferization::BufferizationDialect"
+    "arith::ArithDialect", "bufferization::BufferizationDialect", 
+    "xsmm::XsmmDialect"
   ];
 }
 

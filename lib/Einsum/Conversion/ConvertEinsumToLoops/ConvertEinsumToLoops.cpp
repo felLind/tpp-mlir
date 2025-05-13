@@ -3,6 +3,7 @@
 //
 #include "Einsum/Dialect/Einsum/EinsumOps.h"
 #include "Einsum/Passes.h"
+#include "TPP/Dialect/Xsmm/XsmmOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -12,7 +13,7 @@
 #include "mlir/Dialect/Bufferization/IR/Bufferization.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
+#include <iostream>
 using namespace mlir;
 
 namespace mlir {
@@ -24,11 +25,194 @@ namespace einsum {
 
 namespace {
 
-static bool validateConfig(DictionaryAttr config) {
+struct DimensionData {
+  std::string name;
+  std::string type;
+  int64_t size;  
+  int64_t pos_left;
+  int64_t pos_right;
+  int64_t pos_out;
+  int64_t stride_left;
+  int64_t stride_right;
+  int64_t stride_out;
+  std::string parallel_type;
+};
+
+static int64_t get_position(ArrayAttr dims, StringAttr name) {
+  int64_t pos = 0;
+  for(auto it = dims.begin(); it != dims.end(); it++){
+    StringAttr current_dim = ::llvm::dyn_cast<StringAttr>(*it);
+    if (current_dim.compare(name) == 0) {
+      return pos;
+    }
+    pos++;
+  }
+  return -1;
+}
+
+struct DimensionDatas {
+  SmallVector<DimensionData> data;
+
+  void add(DimensionData d) {
+    data.push_back(d);
+  };
+
+  ArrayRef<int64_t> get_kernel_data() {
+    int64_t m;
+    int64_t n;
+    int64_t k;
+    int64_t lda;
+    int64_t ldb;
+    int64_t ldc;
+    
+    for (auto it = data.begin(); it != data.end(); it++) {
+      DimensionData d = *it;
+      if (d.parallel_type.compare("prim") == 0) {
+        if (d.type.compare("m") == 0) {
+          m = d.size;
+        }
+        if (d.type.compare("n") == 0) {
+          n = d.size;  
+        }
+        if (d.type.compare("k") == 0) {
+          k = d.size;
+        }
+      }
+      lda = ldc = m;
+      ldb = k;
+    }
+
+    return ArrayRef<int64_t>{m, n, k, lda, ldb, ldc};
+  }
+};
+
+static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryContractionOp) {
+  DimensionDatas result;
+    
+  DictionaryAttr config = binaryContractionOp.getConfig();
+  auto dim_names =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_names"));
+  auto dim_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_types"));
+  auto dim_sizes =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_sizes"));
+  auto dims_left =  ::llvm::dyn_cast<ArrayAttr>(config.get("dims_left"));
+  auto dims_right =  ::llvm::dyn_cast<ArrayAttr>(config.get("dims_right"));
+  auto dims_out =  ::llvm::dyn_cast<ArrayAttr>(config.get("dims_out"));  
+  auto strides_left =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_left"));
+  auto strides_right =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_right"));
+  auto strides_out =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_out"));
+
+  auto parallel_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("parallel_types"));
+  int pos = 0;
+  for(auto it = dim_names.getValue().begin(); it != dim_names.getValue().end(); it++){
+    StringAttr name = ::llvm::dyn_cast<StringAttr>(*it);
+    DimensionData dim_data;
+    dim_data.name = name.str();
+    dim_data.type = ::llvm::dyn_cast<StringAttr>(dim_types[pos]).str();
+    dim_data.size = ::llvm::dyn_cast<IntegerAttr>(dim_sizes[pos]).getInt();
+    dim_data.parallel_type = ::llvm::dyn_cast<StringAttr>(parallel_types[pos]).str();
+    dim_data.pos_left = get_position(dims_left, name);
+    dim_data.pos_right = get_position(dims_right, name);
+    dim_data.pos_out = get_position(dims_out, name);
+    dim_data.stride_left = ::llvm::dyn_cast<IntegerAttr>(strides_left[pos]).getInt();
+    dim_data.stride_right = ::llvm::dyn_cast<IntegerAttr>(strides_right[pos]).getInt();
+    dim_data.stride_out = ::llvm::dyn_cast<IntegerAttr>(strides_out[pos]).getInt();
+    result.add(dim_data);
+    pos++;
+  } 
+
+  return result;
+}
+
+static LogicalResult validateConfig(DictionaryAttr config) {
   bool validationResult = true;
-  validationResult &= config.contains("tree");
+  validationResult &= config.contains("dim_names");
   validationResult &= config.contains("dim_sizes");
-  return validationResult;
+  validationResult &= config.contains("dim_types");
+  validationResult &= config.contains("dims_left");
+  validationResult &= config.contains("dims_right");
+  validationResult &= config.contains("dims_out");
+  validationResult &= config.contains("strides_left");
+  validationResult &= config.contains("strides_right");
+  validationResult &= config.contains("strides_out");
+  validationResult &= config.contains("parallel_types");
+  validationResult &= config.contains("primitive_types");
+
+  return success(validationResult);
+}
+
+static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> leftBuffer, TypedValue<MemRefType> rightBuffer, TypedValue<MemRefType> outBuffer,
+                               OpBuilder &b, Location loc, ValueRange localIvs) {
+  Value zero = b.create<mlir::arith::ConstantIndexOp>(loc, 0);
+  Value one = b.create<mlir::arith::ConstantIndexOp>(loc, 1);
+  
+  size_t leftRank = cast<MemRefType>(leftBuffer.getType()).getRank();
+  size_t rightRank = cast<MemRefType>(rightBuffer.getType()).getRank();
+  size_t outRank = cast<MemRefType>(outBuffer.getType()).getRank();
+
+  SmallVector<Value> left_offsets(leftRank, zero);
+  SmallVector<Value> left_sizes(leftRank, one);
+  SmallVector<Value> left_strides(leftRank, one);
+  SmallVector<Value> right_offsets(rightRank, zero);
+  SmallVector<Value> right_sizes(rightRank, one);
+  SmallVector<Value> right_strides(rightRank, one);
+  SmallVector<Value> out_offsets(outRank, zero);
+  SmallVector<Value> out_sizes(outRank, one);
+  SmallVector<Value> out_strides(outRank, one);
+
+  int non_prim_idx_left = 0;
+  int non_prim_idx_right = 0;
+  int non_prim_idx_out = 0;
+  for(auto it = data.data.begin(); it != data.data.end(); it++) {
+    DimensionData dim = *it;
+    if (dim.pos_left != -1) {
+      if (dim.parallel_type.compare("prim") == 0) {
+        left_sizes[dim.pos_left] = b.create<mlir::arith::ConstantIndexOp>(loc, dim.size);
+      } else {
+        left_offsets[dim.pos_left] = localIvs[non_prim_idx_left];
+        non_prim_idx_left++;
+      }
+    }
+    if (dim.pos_right != -1) {
+      if (dim.parallel_type.compare("prim") == 0) {
+        left_sizes[dim.pos_right] = b.create<mlir::arith::ConstantIndexOp>(loc, dim.size);
+      } else {
+        left_offsets[dim.pos_right] = localIvs[non_prim_idx_right];
+        non_prim_idx_right++;
+      }
+    }
+    if (dim.pos_out != -1) {
+      if (dim.parallel_type.compare("prim") == 0) {
+        left_sizes[dim.pos_out] = b.create<mlir::arith::ConstantIndexOp>(loc, dim.size);
+      } else {
+        left_offsets[dim.pos_out] = localIvs[non_prim_idx_out];
+        non_prim_idx_out++;
+      }
+    }
+  }
+  auto left_subview = b.create<mlir::memref::SubViewOp>(loc, leftBuffer, left_offsets, left_sizes, left_strides);
+  auto right_subview = b.create<mlir::memref::SubViewOp>(loc, rightBuffer, right_offsets, right_sizes, right_strides);
+  auto out_subview = b.create<mlir::memref::SubViewOp>(loc, outBuffer, out_offsets, out_sizes, out_strides);
+
+  xsmm::GemmFlagsAttr gemmFlags =
+        xsmm::GemmFlagsAttr::get(b.getContext(), xsmm::GemmFlags::NONE);
+  //TODO: bf16! 
+  auto dtype =
+    xsmm::DataTypeAttr::get(b.getContext(), xsmm::DataType::F32);
+  IntegerType integer64 = IntegerType::get(b.getContext(), 64);
+  DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+      b.getContext(), data.get_kernel_data());
+
+  auto flags = b.getArrayAttr(gemmFlags);
+
+  Value dispatched = b.create<xsmm::GemmDispatchOp>(
+      loc, integer64, dims, flags, dtype);
+  
+  SmallVector<Value> invokeOperands;
+  invokeOperands.push_back(dispatched);
+  invokeOperands.push_back(left_subview);
+  invokeOperands.push_back(right_subview);
+  invokeOperands.push_back(out_subview);
+  b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
+  return scf::ValueVector();
 }
 
 struct ConvertBinaryContractionOp
@@ -38,94 +222,72 @@ struct ConvertBinaryContractionOp
   LogicalResult matchAndRewrite(einsum::BinaryContractionOp binaryContractionOp,
                                 PatternRewriter &rewriter) const override {
     Location loc = binaryContractionOp.getLoc();
-   
     DictionaryAttr config = binaryContractionOp.getConfig();
-    
-    if (!validateConfig(config)) {
+    if (validateConfig(config).failed()) {
       return failure();
     }
 
+    DimensionDatas dim_data = create_dimension_datas(binaryContractionOp);
+  
     Value zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
   
-    auto leftTensorType = llvm::cast<ShapedType>(binaryContractionOp.getLeft().getType());
-    auto leftMemrefType =
-      MemRefType::get(leftTensorType.getShape(), leftTensorType.getElementType());
-
-    auto rightTensorType = llvm::cast<ShapedType>(binaryContractionOp.getRight().getType());
-    auto rightMemrefType =
-     MemRefType::get(rightTensorType.getShape(), rightTensorType.getElementType());  
-
-    auto outTensorType = llvm::cast<ShapedType>(binaryContractionOp.getOut().getType());
-    auto outMemrefType =
-      MemRefType::get(outTensorType.getShape(), outTensorType.getElementType());  
-
-    auto leftBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, leftMemrefType, binaryContractionOp.getLeft());
-    auto rightBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, rightMemrefType, binaryContractionOp.getRight());
-    auto outBuffer = rewriter.create<mlir::bufferization::ToMemrefOp>(loc, outMemrefType, binaryContractionOp.getOut());
+    auto outMemrefType = binaryContractionOp.getOut().getType();
+    
+    auto leftBuffer = binaryContractionOp.getLeft();
+    auto rightBuffer = binaryContractionOp.getRight();
+    auto outBuffer = binaryContractionOp.getOut();
     auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, outMemrefType);
     rewriter.create<mlir::memref::CopyOp>(loc, outBuffer, allocBuffer);
     
-    SmallVector<Value> ubs;
-    auto dim_sizes =  ::llvm::dyn_cast<StringAttr>(config.get("dim_sizes"));
-    for(StringRef x : llvm::split(dim_sizes, ',')){
-      ubs.push_back(rewriter.create<mlir::arith::ConstantIndexOp>(loc, atoi(x.data())));
-    }  
- 
-    SmallVector<Value> lbs(ubs.size(), zero);
-    SmallVector<Value> steps(ubs.size(), one);
- 
-    (void)mlir::scf::buildLoopNest(
-        rewriter, loc, lbs, ubs, steps,
-        [&](OpBuilder &b, Location loc, ValueRange localIvs) {
-             
-          auto tree = ::llvm::dyn_cast<StringAttr>(config.get("tree")).str();
+    SmallVector<Block*, 4> bodies;
+    SmallVector<Operation::result_range, 4> loop_results;
+    SmallVector<Value, 4> ivs;
+    ValueRange currentIterArgs = std::nullopt;
+    Location currentLoc = loc;
 
-          std::size_t endLeft = tree.find("]");
-          
-          SmallVector<Value> leftRange;
-
-          std::string left = tree.substr(1, endLeft - 1);
-
-          for(StringRef x : llvm::split(left, ',')){
-            leftRange.push_back(localIvs[atoi(x.data())]);
-          }
-
-          SmallVector<Value> rightRange;
-
-          tree = tree.substr(endLeft + 3);   
-
-          std::size_t endRight = tree.find("]");     
-
-          std::string right = tree.substr(0, endRight);
-
-          for(StringRef x : llvm::split(right, ',')){
-            rightRange.push_back(localIvs[atoi(x.data())]);
-          }
-
-          SmallVector<Value> allocRange;
-
-          tree = tree.substr(endRight + 4);   
-
-          std::string root = tree.substr(0, tree.size() - 1);
-
-          for(StringRef x : llvm::split(root, ',')){
-            allocRange.push_back(localIvs[atoi(x.data())]);
-          }
-
-          Value leftScalar = b.create<memref::LoadOp>(loc, leftBuffer, leftRange);
-          Value rightScalar = b.create<memref::LoadOp>(loc, rightBuffer, rightRange);
-          Value allocScalar = b.create<memref::LoadOp>(loc, allocBuffer, allocRange);
-         
-         Value prod = b.create<arith::MulFOp>(loc, leftScalar, rightScalar);
-         Value sum = b.create<arith::AddFOp>(loc, allocScalar, prod);                                                                
-         b.create<memref::StoreOp>(loc, sum, allocBuffer, allocRange);
+    auto it = dim_data.data.begin();  
+    while((*it).parallel_type.compare("prim") != 0 && it != dim_data.data.end()) {
+      DimensionData d = (*it);
+      Value ubs = rewriter.create<mlir::arith::ConstantIndexOp>(loc, d.size);
+      if(d.parallel_type.compare("omp") == 0) {
+        auto loop = rewriter.create<scf::ParallelOp>(
+        currentLoc, zero, ubs, one, currentIterArgs,
+        [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange iv,
+            ValueRange args) {
+          ivs.append(iv.begin(), iv.end());
+          currentIterArgs = args;
+          currentLoc = nestedLoc;
         });
- 
-    Value result = rewriter.create<mlir::bufferization::ToTensorOp>(loc, outTensorType, allocBuffer, true);
-    SmallVector<Value> results({result});
-    rewriter.replaceOp(binaryContractionOp, results);
+        
+        rewriter.setInsertionPointToStart(loop.getBody());
+        bodies.push_back(loop.getBody());
+        loop_results.push_back(loop.getResults());
+      } else {
+        auto loop = rewriter.create<scf::ForOp>(
+        currentLoc, zero, ubs, one, currentIterArgs,
+        [&](OpBuilder &nestedBuilder, Location nestedLoc, Value iv,
+            ValueRange args) {
+          ivs.push_back(iv);
+          currentIterArgs = args;
+          currentLoc = nestedLoc;
+        });
+        rewriter.setInsertionPointToStart(loop.getBody());
+        bodies.push_back(loop.getBody());
+        loop_results.push_back(loop.getResults());
+      }
+      it++;
+    }
+    for (unsigned i = 0, e = bodies.size() - 1; i < e; ++i) {
+      rewriter.setInsertionPointToEnd(bodies[i]);
+      rewriter.create<scf::YieldOp>(loc, loop_results[i + 1]);
+    }
     
+    rewriter.setInsertionPointToStart(bodies.back());
+    scf::ValueVector results = bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs);
+    rewriter.setInsertionPointToEnd(bodies.back());
+    rewriter.create<scf::YieldOp>(loc, results);
+ 
     return success();
   }
 };

@@ -5,7 +5,6 @@
 #ifndef EINSUM_DIALECT_EINSUM_EINSUMOPS_H
 #define EINSUM_DIALECT_EINSUM_EINSUMOPS_H
 
-#include "Einsum/Dialect/Einsum/EinsumTypes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
