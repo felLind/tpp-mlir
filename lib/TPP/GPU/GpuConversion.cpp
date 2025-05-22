@@ -58,15 +58,15 @@ private:
   void constructPipeline() override {
     // Map loops into GPU kernels.
     pm.addNestedPass<func::FuncOp>(createGpuMapParallelLoopsPass());
-    pm.addNestedPass<func::FuncOp>(createParallelLoopToGpuPass());
+    pm.addNestedPass<func::FuncOp>(createConvertParallelLoopToGpuPass());
     pm.addPass(createCleanup());
 
     // First lower linalg using custom patterns then fall back to
     // the default lowering for any remaining ops.
     pm.addNestedPass<func::FuncOp>(createLinalgDeGeneralize());
     if (isIntel) {
-      pm.addNestedPass<func::FuncOp>(
-          createLinalgToXeGPU(LinalgToXeGPUOptions{kTile, stages, dpasTile}));
+      pm.addNestedPass<func::FuncOp>(createLinalgToXeGPU(LinalgToXeGPUOptions{
+          kTile, stages, SmallVector<int64_t>{*dpasTile}}));
     }
     pm.addNestedPass<func::FuncOp>(createConvertLinalgToLoopsPass());
     pm.addPass(createCleanup());

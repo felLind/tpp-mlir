@@ -11,6 +11,23 @@
 
 include "mlir/Pass/PassBase.td"
 
+def LoadTppDialects : Pass<"load-tpp-dialects", "ModuleOp"> {
+  let summary = "Pre-load all TPP-specific dialects";
+  let description = [{
+    Pre-load dialects that -transform-interpreter would try to load at runtime.
+
+    The issue is that -transform-interpreter runs inside the multi-threaded
+    passmanager. Hence when the interpreter dynamically tries to load dependent
+    dialects this triggers an assert as loading during multi-threaded execution
+    could lead to concurrency issues.
+  }];
+  let dependentDialects = ["xsmm::XsmmDialect",
+                           "check::CheckDialect",
+                           "perf::PerfDialect",
+                           "omp::OpenMPDialect",
+                           "async::AsyncDialect"];
+}
+
 def ConvertLinalgToXsmm : Pass<"convert-linalg-to-xsmm", "func::FuncOp"> {
   let summary = "Convert linalg to xsmm";
   let description = [{
@@ -21,6 +38,10 @@ def ConvertLinalgToXsmm : Pass<"convert-linalg-to-xsmm", "func::FuncOp"> {
                            "linalg::LinalgDialect",
                            "xsmm::XsmmDialect",
                            "tensor::TensorDialect"];
+  let options = [
+    ListOption<"skipOperations", "skip-operations", "std::string",
+           "Operations to skip.">
+  ];
 }
 
 def VerifyXsmmCalls : Pass<"verify-xsmm-calls", "func::FuncOp"> {
@@ -53,6 +74,18 @@ def VectorizationPass : Pass<"vectorization-pass",
   let dependentDialects = [ "memref::MemRefDialect", "linalg::LinalgDialect", "vector::VectorDialect" ];
 }
 
+
+
+def HoistVectorTransfers : Pass<"hoist-vector-transfer"> {
+  let summary = "Hoist vector transfer operation outside of reduction and k loop";
+  let description = [{
+    Hoists the vector transfer read and write operations of the resultant  matrix outside the reduction and k loop for a brgemm operation. This pass should be applied after the BrgemmLinalgTiling Pass.
+  }];
+  let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect" ];
+}
+
+
+
 def VectorContractToOuterproduct : Pass<
     "vector-contract-to-outerproduct"> {
   let summary = "Perform outerproduct lowering of vector contraction ops";
@@ -62,6 +95,50 @@ def VectorContractToOuterproduct : Pass<
                            "vector::VectorDialect"];
 }
 
+def VectorContractToFMA : Pass<
+    "vector-contract-to-fma"> {
+  let summary = "Perform vector fma lowering of vector contraction ops";
+  let dependentDialects = ["memref::MemRefDialect",
+                           "scf::SCFDialect",
+                           "tensor::TensorDialect",
+                           "vector::VectorDialect",
+                           "arith::ArithDialect"];
+}
+
+def VectorContractToAMX : Pass<
+    "vector-contract-to-amx"> {
+  let summary = "Perform vector amx lowering of vector contraction ops";
+  let dependentDialects = ["memref::MemRefDialect",
+                           "scf::SCFDialect",
+                           "tensor::TensorDialect",
+                           "vector::VectorDialect",
+                           "arith::ArithDialect",
+                           "amx::AMXDialect",
+                           "x86vector::X86VectorDialect"];
+}
+
+
+def BrgemmLinalgTiling : Pass<"tile-brgemm-linalg"> {
+  let summary = "Tile bregmm  matmul and reduction dimension.";
+  let description = [{
+    Tiles the innermost dimensions of the batch reduce matmul operation to support perfect register allocation. Additionally, it swaps the reduction and k dimension loop. The final loop structure is as follows: M-loop->N-loop->reduction-loop->K-loop. For example: --tile-brgemm-linalg="registerBlocking=<mTileSize>, <nTileSize>".
+  }];
+  let dependentDialects = ["linalg::LinalgDialect",
+                           "memref::MemRefDialect",
+                           "arith::ArithDialect"];
+  let options = [
+         ListOption<"registerTileShape", "registerBlocking", "unsigned", "Input for the register blocking tile shapes for a brgemm operation">,
+  ];
+}
+
+
+def BF16DotProduct : Pass<"vector-contract-to-bf16dp"> {
+   let summary = "Perform avx512bf16 dot product lowering of vector contraction operation for bf16 type with vnni layout=2";
+   let description = [{
+     Perform avx512bf16 dot product lowering of vector contraction operation for bf16 type with vnni layout=2.
+   }];
+   let dependentDialects = [ "vector::VectorDialect", "scf::SCFDialect", "x86vector::X86VectorDialect" ];
+ }
 
 def ConvertXsmmToFunc : Pass<"convert-xsmm-to-func", "ModuleOp"> {
   let summary = "Convert xsmm to func";
@@ -221,26 +298,26 @@ def CombineXsmmOpPass : Pass<"combine-xsmm-op-optimization", "func::FuncOp"> {
 }
 
 def PropagatePackUnPack : Pass<"propagate-pack-and-unpack", "func::FuncOp"> {
-  let summary = "Propagate tensor.pack and tensor.unpack";
+  let summary = "Propagate linalg.pack and linalg.unpack";
   let description = [{
-    Attempt to push tensor.pack and tensor.unpack at the boundaries. Currently,
+    Attempt to push linalg.pack and linalg.unpack at the boundaries. Currently,
     it propagates through linalg element-wise operations. Only one operand in the
-    generic must come from a tensor.pack/tensor.unpack.
+    generic must come from a linalg.pack/linalg.unpack.
   }];
 }
 
 def SimplifyAndCanonicalizePack : Pass<"simplify-pack", "func::FuncOp"> {
-  let summary = "Simplify and canonicalize tensor.pack";
+  let summary = "Simplify and canonicalize linalg.pack";
   let description = [{
-    Apply `tensor.pack` and `tensor.unpack` canonicalization and simplification
+    Apply `linalg.pack` and `linalg.unpack` canonicalization and simplification
     patterns.
   }];
 }
 
 def ConstantFoldPack : Pass<"constant-fold-pack", "ModuleOp"> {
-  let summary = "Constant fold tensor.pack";
+  let summary = "Constant fold linalg.pack";
   let description = [{
-    Reduce pack overhead by folding tensor.pack into constant tensors.
+    Reduce pack overhead by folding linalg.pack into constant tensors.
   }];
   let dependentDialects = ["linalg::LinalgDialect",
                            "tensor::TensorDialect",

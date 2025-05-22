@@ -25,8 +25,13 @@ add_mlir_library(TPPTransforms
   FoldIntoEltwise.cpp
   FoldAddIntoDest.cpp
   Vectorization.cpp
+  BrgemmLinalgTiling.cpp
   SplitReductionDim.cpp
   VectorContractToOuterproduct.cpp
+  HoistVectorTransfers.cpp
+  VectorContractToFMA.cpp
+  VectorContractToBF16DotProduct.cpp
+  VectorContractToAMX.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP

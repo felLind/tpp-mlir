@@ -88,13 +88,13 @@ LogicalResult MLIRBench::findKernel(StringRef name) {
 
   } else {
     // If there is no entry function, and multiple functions, bail
-    return module.emitError("No valid entry point, use mlir-cpu-runner");
+    return module.emitError("No valid entry point, use mlir-runner");
   }
 
   // Ignore functions that return more than one result
   auto funcType = kernel.getFunctionType();
   if (funcType.getNumResults() > 1)
-    return module.emitError("Multiple return values, use mlir-cpu-runner");
+    return module.emitError("Multiple return values, use mlir-runner");
 
   return success();
 }
@@ -351,8 +351,8 @@ LogicalResult MLIRBench::printShapedType(mlir::Value val) {
     outerDim = outputType.getShape()[0];
 
   // Vector undefined value
-  Value minusOne = builder.create<arith::ConstantOp>(
-      unkLoc, getTypedAttr(builder, outElmType, -1.0));
+  Value undefLengthCst = builder.create<arith::ConstantOp>(
+      unkLoc, getTypedAttr(builder, outElmType, 0.0));
 
   // Loop through the shaped type, transfer each dim to vector
   auto count = getConstIndex(builder, outerDim);
@@ -364,7 +364,7 @@ LogicalResult MLIRBench::printShapedType(mlir::Value val) {
   // Loop body
   auto beginIdx = loop.getInductionVar();
   auto vector = builder.create<vector::TransferReadOp>(
-      unkLoc, vecType, val, ValueRange{beginIdx, zero}, minusOne);
+      unkLoc, vecType, val, ValueRange{beginIdx, zero}, undefLengthCst);
   printVector(vector);
 
   // Finally lower to LLVM Dialect
@@ -388,7 +388,7 @@ LogicalResult MLIRBench::printResult(Operation *kernelCall) {
 
     if (isa<TensorType>(result.getType())) {
       result =
-          builder.create<bufferization::ToMemrefOp>(unkLoc, memrefType, result);
+          builder.create<bufferization::ToBufferOp>(unkLoc, memrefType, result);
     }
 
     auto outBuf = builder.create<memref::AllocOp>(unkLoc, memrefType);

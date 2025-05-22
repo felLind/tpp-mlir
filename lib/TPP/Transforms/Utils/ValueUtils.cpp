@@ -98,14 +98,11 @@ bool isZeroOp(Operation *defOp) {
       .Default([&](Operation *op) { return false; });
 }
 
-FailureOr<SmallVector<int64_t>> getStaticStrides(Value value) {
-  auto valueType = value.getType();
-  if (!isa<MemRefType>(valueType))
-    return failure();
+FailureOr<SmallVector<int64_t>> getStaticStrides(MemRefType valueType) {
   auto memrefType = cast<MemRefType>(valueType);
   SmallVector<int64_t> strides;
   int64_t offset;
-  if (failed(getStridesAndOffset(memrefType, strides, offset))) {
+  if (failed(memrefType.getStridesAndOffset(strides, offset))) {
     return failure();
   }
   if (llvm::any_of(strides, [](int64_t stride) {
@@ -114,6 +111,13 @@ FailureOr<SmallVector<int64_t>> getStaticStrides(Value value) {
     return failure();
   }
   return strides;
+}
+
+FailureOr<SmallVector<int64_t>> getStaticStrides(Value value) {
+  auto valueType = value.getType();
+  if (!isa<MemRefType>(valueType))
+    return failure();
+  return getStaticStrides(dyn_cast<MemRefType>(valueType));
 }
 
 std::pair<Value, Value> getPtrAndOffset(OpBuilder &builder, Value operand,

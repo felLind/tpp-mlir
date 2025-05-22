@@ -1,9 +1,5 @@
-# Use LIBXSMM (make PREFIX=/path/to/libxsmm) given by LIBXSMMROOT
-set(LIBXSMMROOT $ENV{LIBXSMMROOT})
-# Fetch LIBXSMM (even if LIBXSMMROOT is present)
-set(LIBXSMMFETCH $ENV{LIBXSMMFETCH})
-
-if(LIBXSMMROOT AND NOT LIBXSMMFETCH)
+# Make to pass full path to LIBXSMMROOT
+if(EXISTS ${LIBXSMMROOT})
   message(STATUS "Found LIBXSMM (${LIBXSMMROOT})")
   file(GLOB XSMM_SRCS LIST_DIRECTORIES false CONFIGURE_DEPENDS ${LIBXSMMROOT}/include/libxsmm/*.c)
   list(REMOVE_ITEM XSMM_SRCS ${LIBXSMMROOT}/include/libxsmm/libxsmm_generator_gemm_driver.c)
@@ -13,8 +9,8 @@ else()
 
   FetchContent_Declare(
     xsmm
-    URL https://github.com/libxsmm/libxsmm/archive/a4bb2a90c161c3f64563846fecaf291eeaa1b1d9.tar.gz
-    URL_HASH SHA256=4f9400bdb5361a829a1e7c635c904fc76328256df25ab071e1694fff593e5398
+    URL https://github.com/libxsmm/libxsmm/archive/85851d4368f730069086e5acf65eaa3ae3e80852.tar.gz
+    URL_HASH SHA256=5b63f968ca0c618e0edf6760399a72c07cabed88b103e0ced11e30b321a824b7
   )
 
   FetchContent_GetProperties(xsmm)

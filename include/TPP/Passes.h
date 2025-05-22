@@ -22,6 +22,10 @@ namespace arith {
 class ArithDialect;
 } // namespace arith
 
+namespace async {
+class AsyncDialect;
+} // namespace async
+
 namespace check {
 class CheckDialect;
 } // namespace check
@@ -56,6 +60,10 @@ namespace memref {
 class MemRefDialect;
 } // namespace memref
 
+namespace omp {
+class OpenMPDialect;
+} // namespace omp
+
 namespace perf {
 class PerfDialect;
 } // namespace perf
@@ -70,6 +78,10 @@ class SPIRVDialect;
 
 namespace tensor {
 class TensorDialect;
+} // namespace tensor
+
+namespace vector {
+class VectorDialect;
 } // namespace tensor
 
 namespace tpp {
@@ -91,6 +103,14 @@ class XsmmDialect;
 namespace xegpu {
 class XeGPUDialect;
 } // namespace xegpu
+
+namespace amx {
+class AMXDialect;
+} // namespace amx
+
+namespace x86vector {
+class X86VectorDialect;
+} // namespace x86vector
 
 } // namespace mlir
 

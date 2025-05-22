@@ -230,8 +230,8 @@ struct VectorContractToOuterproductPattern
                                     nestedBuilder.getContext());
           }
 
-          Value lhsTensor = lhsDefiningOp.getSource();
-          Value rhsTensor = rhsDefiningOp.getSource();
+          Value lhsTensor = lhsDefiningOp.getBase();
+          Value rhsTensor = rhsDefiningOp.getBase();
           // Read vector slices using TransferReadOp
           auto lhsSlice = nestedBuilder.create<vector::TransferReadOp>(
               nestedLoc, VectorType::get({M}, lhsType.getElementType()),
@@ -273,7 +273,7 @@ struct VectorContractToOuterproduct
     RewritePatternSet patterns(context);
     patterns.add<VectorContractToOuterproductPattern>(context);
 
-    if (failed(applyPatternsAndFoldGreedily(funcOp, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(funcOp, std::move(patterns)))) {
       signalPassFailure();
     }
   }
