@@ -25,6 +25,27 @@ namespace einsum {
 
 namespace {
 
+struct LoopWrapper {
+  scf::ParallelOp parallelOp = nullptr;
+  scf::ForOp forOp = nullptr;
+
+  LoopWrapper(scf::ForOp fo){
+    forOp = fo;
+  };
+
+  LoopWrapper(scf::ParallelOp po){
+    parallelOp = po;
+  };
+
+  Block* getBody() {
+    return forOp != nullptr ? forOp.getBody() : parallelOp != nullptr ? parallelOp.getBody() : nullptr;
+  }
+
+  ResultRange getResults() {
+    return forOp != nullptr ? forOp.getResults() : parallelOp != nullptr ? parallelOp.getResults() : ResultRange(nullptr);
+  }
+};
+
 struct DimensionData {
   std::string name;
   std::string type;
@@ -239,9 +260,8 @@ struct ConvertBinaryContractionOp
     auto outBuffer = binaryContractionOp.getOut();
     auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, outMemrefType);
     rewriter.create<mlir::memref::CopyOp>(loc, outBuffer, allocBuffer);
-    
-    SmallVector<Block*, 4> bodies;
-    SmallVector<Operation::result_range, 4> loop_results;
+
+    SmallVector<LoopWrapper, 4> loops;
     SmallVector<Value, 4> ivs;
     ValueRange currentIterArgs = std::nullopt;
     Location currentLoc = loc;
@@ -259,10 +279,8 @@ struct ConvertBinaryContractionOp
           currentIterArgs = args;
           currentLoc = nestedLoc;
         });
-        
         rewriter.setInsertionPointToStart(loop.getBody());
-        bodies.push_back(loop.getBody());
-        loop_results.push_back(loop.getResults());
+        loops.push_back(LoopWrapper(loop));
       } else {
         auto loop = rewriter.create<scf::ForOp>(
         currentLoc, zero, ubs, one, currentIterArgs,
@@ -273,19 +291,26 @@ struct ConvertBinaryContractionOp
           currentLoc = nestedLoc;
         });
         rewriter.setInsertionPointToStart(loop.getBody());
-        bodies.push_back(loop.getBody());
-        loop_results.push_back(loop.getResults());
+        loops.push_back(LoopWrapper(loop));
       }
       it++;
     }
-    for (unsigned i = 0, e = bodies.size() - 1; i < e; ++i) {
-      rewriter.setInsertionPointToEnd(bodies[i]);
-      rewriter.create<scf::YieldOp>(loc, loop_results[i + 1]);
+
+    SmallVector<LoopWrapper, 4> rewinded_loops;
+
+    //TODO better rewind
+    for (unsigned i = loops.size(); i > 0; --i) {
+      rewinded_loops.push_back(loops[i - 1]);
+    }
+
+    for (unsigned i = 0, e = rewinded_loops.size() - 1; i < e; ++i) {
+      rewriter.setInsertionPointToEnd(rewinded_loops[i].getBody());
+      rewriter.create<scf::YieldOp>(loc, rewinded_loops[i + 1].getResults());
     }
     
-    rewriter.setInsertionPointToStart(bodies.back());
+    rewriter.setInsertionPointToStart(loops.back().getBody());
     scf::ValueVector results = bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs);
-    rewriter.setInsertionPointToEnd(bodies.back());
+    rewriter.setInsertionPointToEnd(loops.back().getBody());
     rewriter.create<scf::YieldOp>(loc, results);
  
     return success();

@@ -72,6 +72,7 @@ struct DefaultTppPasses
 
 private:
   void constructPipeline() override {
+    pm.addPass(createPrintIRPass());
     pm.addPass(mlir::einsum::createConvertEinsumToLoops());
     if (linalgToLoops) {
       // Lower linalg directly to loops.
@@ -91,18 +92,17 @@ private:
       // Applies a set of passes at the linalg level to fuse and pack.
       pm.addPass(createTppMapping());
 
+      pm.addPass(createPrintIRPass());
       // Generalize tensor.pack and tensor.unpack.
       pm.addPass(createLowerPacksAndUnPacks());
       pm.addPass(createCleanup());
-
       // Decompose Aggregated operations. These ops currently do not
       // bufferize. Once this is possible we can move this pass after
       // bufferization.
       pm.addNestedPass<func::FuncOp>(createDecomposeAggregatedOps());
-
       // Bufferize: tensor->memref.
       pm.addPass(createBufferize());
-
+      pm.addPass(createPrintIRPass());
       // TODO: This flag will be removed once the vector path becomes the
       // default lowering path.
       if (linalgToVector) {
@@ -111,13 +111,14 @@ private:
       } else {
         // Lower all Tile operations.
         pm.addNestedPass<func::FuncOp>(createLinalgLowering());
+        pm.addPass(createPrintIRPass());
       }
-      pm.addPass(createCleanup());
+      pm.addPass(createCleanup()); 
     }
 
     // Convert forAll to parallel loops should run after bufferization
     // as scf.parallel does not handle tensor.
-    pm.addPass(createConvertForAllToParallelOp());
+     pm.addPass(createConvertForAllToParallelOp());
     LowLevelParallelizationOptions LowLevelParallelization{parallelTaskGrid};
 
     if (linalgToVector) {
