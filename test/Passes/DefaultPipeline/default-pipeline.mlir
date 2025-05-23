@@ -1,4 +1,5 @@
 // RUN: tpp-opt %s -default-pipeline | FileCheck %s
+// RUN: tpp-sched --bundle=default-pipeline %s | FileCheck %s
 
 func.func @matmul(%A: tensor<4x8xf32>,
           %B: tensor<8x4xf32>, %C: tensor<4x4xf32>) -> tensor<4x4xf32> {
@@ -9,8 +10,6 @@ func.func @matmul(%A: tensor<4x8xf32>,
 // CHECK: llvm.func @xsmm_gemm_invoke
 // CHECK: llvm.func @xsmm_gemm_dispatch
 // CHECK: llvm.func @matmul(%[[ARG0:.+]]: !llvm.ptr,
-// CHECK:   llvm.insertvalue
-// CHECK:   llvm.mlir.constant
 // CHECK:   llvm.call @xsmm_gemm_dispatch
 // CHECK:   llvm.call @xsmm_gemm_invoke
 // CHECK:   llvm.return

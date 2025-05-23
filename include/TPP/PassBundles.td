@@ -37,7 +37,19 @@ def DefaultTppPasses : Pass<"default-tpp-passes", "ModuleOp"> {
            "unsigned", "Grid-sizes for parallel tasks.">,
     Option<"linalgToVector", "linalg-to-vector",
            "bool", /*default=*/"false",
-           "Lower linalg directly to vector.">
+           "Lower linalg directly to vector.">,
+    Option<"vectorToXSMM", "vector-to-xsmm",
+           "bool", /*default=*/"false",
+           "Lower vector patterns to XSMM calls.">,
+    Option<"vectorToKernel", "vector-to-kernel",
+           "bool", /*default=*/"false",
+           "Lower vector patterns to micro-kernels.">,
+    Option<"lowerPackUnpackWithoutTranspose", "lower-pack-unpack-without-transpose",
+           "bool", /*default=*/"false",
+           "Lower non-constant packs and unpacks reverting any dim permutations.">,
+    ListOption<"registerBlocking", "registerBlocking",
+           "unsigned", "Register blocking tile sizes for brgemm operation.">,
+
   ];
 }
 
@@ -51,6 +63,11 @@ def TppMapping : Pass<"tpp-mapping", "ModuleOp"> {
                            "memref::MemRefDialect",
                            "scf::SCFDialect",
                            "tensor::TensorDialect"];
+  let options= [
+    Option<"lowerPackUnpackWithoutTranspose", "lower-pack-unpack-without-transpose",
+           "bool", /*default=*/"false",
+           "Lower non-constant packs and unpacks reverting any dim permutations.">
+  ];
 }
 
 def LinalgLowering : Pass<"linalg-lowering", "func::FuncOp"> {
@@ -58,6 +75,28 @@ def LinalgLowering : Pass<"linalg-lowering", "func::FuncOp"> {
   let dependentDialects = ["xsmm::XsmmDialect",
                            "scf::SCFDialect",
                            "memref::MemRefDialect"];
+  let options = [
+    ListOption<"skipOperations", "skip-operations", "std::string",
+           "Operations to skip lowering linalg-to-xsmm directly.">
+  ];
+}
+
+def VectorToXSMM : Pass<"vector-to-xsmm", "ModuleOp"> {
+  let summary = "Lower Vector operations to XSMM functions.";
+  let dependentDialects = ["scf::SCFDialect",
+			   "pdl::PDLDialect",
+			   "pdl_interp::PDLInterpDialect",
+                    	   "vector::VectorDialect", 
+			   "func::FuncDialect",
+                    	   "memref::MemRefDialect", 
+			   "LLVM::LLVMDialect", 
+			   "BuiltinDialect"];
+}
+
+def VectorToKernel : Pass<"vector-to-kernel", "ModuleOp"> {
+  let summary = "Lower Vector operations to micro-kernel special lowering.";
+  let dependentDialects = ["vector::VectorDialect",
+                           "scf::SCFDialect"];
 }
 
 def LowLevelParallelization : Pass<"low-level-parallel", "ModuleOp"> {
@@ -119,22 +158,12 @@ def GpuConversion : Pass<"gpu-conversion", "ModuleOp"> {
   let description = [{
     Convert all eligble operations into generic GPU operations.
   }];
-  let options = [
-    Option<"useWmma", "wmma",
-           "bool", /*default=*/"false",
-           "Use WMMA operations">,
-    ListOption<"warpTile", "warp-tile", "int64_t", "Warp tile sizes MxNxK">,
-  ];
   let dependentDialects = ["linalg::LinalgDialect",
                            "gpu::GPUDialect",
                            "scf::SCFDialect",
                            "memref::MemRefDialect",
                            "xegpu::XeGPUDialect"];
   let options = [
-    Option<"useWmma", "wmma",
-           "bool", /*default=*/"false",
-           "Use WMMA operations">,
-    ListOption<"warpTile", "warp-tile", "int64_t", "Warp tile sizes MxNxK">,
     Option<"isIntel", "intel",
            "bool", /*default=*/"false",
            "Convert for Intel GPU">,

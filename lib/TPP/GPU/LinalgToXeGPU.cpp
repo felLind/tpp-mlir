@@ -385,7 +385,7 @@ static FailureOr<SmallVector<int64_t>> getStaticBlockSizes(Operation *op) {
     return std::nullopt;
   };
 
-  if (auto launchOp = dyn_cast<gpu::LaunchOp>(op)) {
+  if (auto launchOp = op->getParentOfType<gpu::LaunchOp>()) {
     auto sizeX = getConstVal(launchOp.getBlockSizeX());
     auto sizeY = getConstVal(launchOp.getBlockSizeY());
     auto sizeZ = getConstVal(launchOp.getBlockSizeZ());
@@ -398,7 +398,7 @@ static FailureOr<SmallVector<int64_t>> getStaticBlockSizes(Operation *op) {
   // TODO: Remove when the lowering only occurs within a gpu.launch op.
   //       Manually computing this is brittle and duplicated parallel
   //       loops to gpu conversion.
-  if (auto blockLoop = dyn_cast<scf::ParallelOp>(op)) {
+  if (auto blockLoop = op->getParentOfType<scf::ParallelOp>()) {
     auto gridLoop = blockLoop->getParentOfType<scf::ParallelOp>();
 
     // Blocks or number of threads are represented by the first parallel loop
@@ -512,8 +512,9 @@ createGemmCoopPrefetchTile(PatternRewriter &rewriter, linalg::LinalgOp linalgOp,
 
   auto srcType = cast<ShapedType>(src.getType());
 
-  auto prefetchType =
-      xegpu::TensorDescType::get({numRows, numCols}, srcType.getElementType());
+  auto prefetchType = xegpu::TensorDescType::get(
+      {numRows, numCols}, srcType.getElementType(), /*array_length=*/1,
+      /*boundary_check=*/true);
 
   Value threadId = getGpuLinearThreadId(rewriter, loc);
 
@@ -620,7 +621,9 @@ static SmallVector<Value> createDescriptorTiles(PatternRewriter &rewriter,
   assert(arrayLength == 1 && "Array descriptors are not supported");
 
   auto type = cast<ShapedType>(src.getType());
-  auto descType = xegpu::TensorDescType::get(descTile, type.getElementType());
+  auto descType = xegpu::TensorDescType::get(descTile, type.getElementType(),
+                                             /*array_length=*/1,
+                                             /*boundary_check=*/true);
 
   // Create the root descriptor.
   //
@@ -765,8 +768,8 @@ extractVecSubTiles(PatternRewriter &rewriter, Location loc,
                         return cast<VectorType>(tile.getType()) == vecLoadType;
                       }) &&
          "All loaded vectors must have the same type.");
-  assert(vecLoadType.getShape().size() == 2 ||
-         vnniConf && "Requires VNNI config for non 2D loaded tiles");
+  assert((vecLoadType.getShape().size() == 2 ||
+          vnniConf) && "Requires VNNI config for non 2D loaded tiles");
 
   // Accumulate all dimensions as the vector might have extra VNNI
   // dimensions.
@@ -868,8 +871,9 @@ static LogicalResult createDPASKernel(linalg::LinalgOp linalgOp,
   int dimK = typeA.getShape().back();
 
   // Create C sub-tiles.
-  auto dpasTypeC = xegpu::TensorDescType::get({dpasTileM, dpasTileN},
-                                              typeC.getElementType());
+  auto dpasTypeC = xegpu::TensorDescType::get(
+      {dpasTileM, dpasTileN}, typeC.getElementType(), /*array_length=*/1,
+      /*boundary_check=*/true);
   SmallVector<Value> tilesC = createDescriptorTiles(
       rewriter, loc, matC, typeC.getShape(), {0, 0}, dpasTypeC.getShape());
 
@@ -880,7 +884,7 @@ static LogicalResult createDPASKernel(linalg::LinalgOp linalgOp,
 
   // DPAS only works with F32 accumulators.
   auto dpasResType =
-      VectorType::get(dpasTypeC.getShape(), FloatType::getF32(ctx));
+      VectorType::get(dpasTypeC.getShape(), Float32Type::get(ctx));
 
   // Extend the accumulation values if needed.
   auto convOutPrecision = !typeC.getElementType().isF32();
@@ -934,8 +938,7 @@ static LogicalResult createDPASKernel(linalg::LinalgOp linalgOp,
 
   // Create input prefetch tiles.
   int64_t numThreads = 1;
-  auto blockDims =
-      getStaticBlockSizes(linalgOp->getParentOfType<scf::ParallelOp>());
+  auto blockDims = getStaticBlockSizes(linalgOp);
   if (succeeded(blockDims)) {
     numThreads = std::accumulate(blockDims->begin(), blockDims->end(), 1,
                                  std::multiplies<int64_t>());
@@ -1099,11 +1102,13 @@ static LogicalResult createDPASKernel(linalg::LinalgOp linalgOp,
       for (int n = 0; n < numTilesN; n++) {
         int cIdx = m * numTilesN + n;
 
-        Value result = rewriter
-                           .create<xegpu::DpasOp>(
-                               loc, dpasResType, dpasVecA.getTile(m, k),
-                               dpasVecB.getTile(k, n), dpasResults[cIdx])
-                           .getResult();
+        Value result =
+            rewriter
+                .create<xegpu::DpasOp>(loc, TypeRange{dpasResType},
+                                       ValueRange{dpasVecA.getTile(m, k),
+                                                  dpasVecB.getTile(k, n),
+                                                  dpasResults[cIdx]})
+                .getResult();
 
         // Update sub-tile partial result.
         dpasResults[cIdx] = result;
@@ -1386,17 +1391,20 @@ struct LinalgToXeGPU : public tpp::impl::LinalgToXeGPUBase<LinalgToXeGPU> {
   using LinalgToXeGPUBase::LinalgToXeGPUBase;
 
   void runOnOperation() override {
-    LinalgToXeGPUOptions options{kTile, stages, dpasTile};
+    LinalgToXeGPUOptions options;
+    options.kTile = kTile;
+    options.stages = stages;
+    options.dpasTile = SmallVector<int64_t>{*dpasTile};
 
     // Run GEMM pattern first to allow fusion with its consumers.
     RewritePatternSet gemmPatterns(&getContext());
     populateLinalgGemmToXeGPUPatterns(gemmPatterns, options);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(gemmPatterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(gemmPatterns));
 
     // Convert other remaining ops.
     RewritePatternSet patterns(&getContext());
     populateLinalgEltwiseToXeGPUPatterns(patterns, options);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 

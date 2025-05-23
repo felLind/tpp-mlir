@@ -5,10 +5,10 @@ add_mlir_library(TPPGPU
   GpuToCuda.cpp
   SetSPIRVCapabilities.cpp
   SetSPIRVAbiAttribute.cpp
-  LinalgToGpu.cpp
   GpuDataTransfer.cpp
   GpuInlineConstants.cpp
   LinalgToXeGPU.cpp
+  GpuVectorize.cpp
 
   ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/TPP

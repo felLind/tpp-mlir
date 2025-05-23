@@ -3,23 +3,22 @@ name: TPP-MLIR Benchmarks
 on:
   workflow_dispatch:
     inputs:
-      RUN_SPR_BENCH:
-        description: "Run on Sapphire Rapids"
-        default: "1"
+      RUN_EMR_BENCH:
+        description: "Run on Emerald Rapids"
+        type: boolean
+        default: true
       RUN_ZEN_BENCH:
-        description: "Run on Zen4"
-        default: "0"
-      RUN_ADL_BENCH:
-        description: "Run on Raptor Lake"
-        default: "0"
+        description: "Run on Zen5"
+        type: boolean
+        default: true
       RUN_CLX_BENCH:
-        description: "Run on Coffee Lake"
-        default: "0"
+        description: "Run on CLX"
+        type: boolean
+        default: true
   push:
     branches:
       - 'main'
   pull_request:
-    types: [ labeled ]
 
 env:
   NPROCS_LIMIT_LINK: 8
@@ -28,107 +27,101 @@ env:
 
 jobs:
   Check_LLVM:
-    if: ${{ github.event_name }} == "push" || \
-        (${{ github.event_name }} == "pull_request" && ${{ github.event.label.name == 'benchmark' }})
+    if: |
+      (github.event_name == 'push') || (github.event_name == 'workflow_dispatch') ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     uses: ./.github/workflows/tpp-llvm.yml
     secrets: inherit
 
-  TPP-MLIR-SPR-BASE:
+  TPP-MLIR-EMR-BASE:
     runs-on: pcl-tiergarten
-    if: ${{ github.event_name }} == "push" || \
-        ${{ inputs.RUN_SPR_BENCH }} == 1 || \
-        (${{ github.event_name }} == "pull_request" && ${{ github.event.label.name == 'benchmark' }})
+    if: |
+      (github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && inputs.RUN_EMR_BENCH) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     needs: Check_LLVM
     steps:
       - uses: actions/checkout@v4
-      - name: Sapphire Rapids Base
+      - name: Emerald Rapids Base
         run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -b -p"
-          ${{ env.SRUN }} --partition=spr --time=2:00:00 --constraint=\"notrb\" -- $CMD
+          CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
+               ${{ github.workspace }}/scripts/github/benchmark.sh -b -p"
+          ${{ env.SRUN }} --partition=emr --time=0:30:00 --constraint=\"notrb\" -- $CMD
 
-  TPP-MLIR-SPR-OMP:
+  TPP-MLIR-EMR-OMP:
     runs-on: pcl-tiergarten
-    if: ${{ github.event_name }} == "push" || \
-        ${{ inputs.RUN_SPR_BENCH }} == 1 || \
-        (${{ github.event_name }} == "pull_request" && ${{ github.event.label.name == 'benchmark' }})
+    if: |
+      (github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && inputs.RUN_EMR_BENCH) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark')) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     needs: Check_LLVM
     steps:
       - uses: actions/checkout@v4
-      - name: Sapphire Rapids OpenMP
+      - name: Emerald Rapids OpenMP
         run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -o"
-          ${{ env.SRUN }} --partition=spr --time=2:00:00 --constraint=\"notrb\" -- $CMD
+          CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
+               ${{ github.workspace }}/scripts/github/benchmark.sh -o"
+          ${{ env.SRUN }} --partition=emr --time=0:30:00 --constraint=\"notrb\" -- $CMD
 
   TPP-MLIR-ZEN-BASE:
     runs-on: pcl-tiergarten
-    if: inputs.RUN_ZEN_BENCH == 1
+    if: |
+      (github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && inputs.RUN_ZEN_BENCH) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     needs: Check_LLVM
     steps:
       - uses: actions/checkout@v4
-      - name: Zen4 Base
+      - name: Zen5 Base
         run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -b -p"
-          ${{ env.SRUN }} --partition=zen4 --time=2:00:00 --constraint=\"notrb\" -- $CMD
+          CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
+               ${{ github.workspace }}/scripts/github/benchmark.sh -b -p"
+          ${{ env.SRUN }} --partition=zen5 --time=0:30:00 -- $CMD
 
   TPP-MLIR-ZEN-OMP:
     runs-on: pcl-tiergarten
-    if: inputs.RUN_ZEN_BENCH == 1
+    if: |
+      (github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && inputs.RUN_ZEN_BENCH) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     needs: Check_LLVM
     steps:
       - uses: actions/checkout@v4
-      - name: Zen4 OpenMP
+      - name: Zen5 OpenMP
         run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -o"
-          ${{ env.SRUN }} --partition=zen4 --time=2:00:00 --constraint=\"notrb\" -- $CMD
+          CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
+               ${{ github.workspace }}/scripts/github/benchmark.sh -o"
+          ${{ env.SRUN }} --partition=zen5 --time=0:30:00 -- $CMD
 
   TPP-MLIR-CLX-BASE:
     runs-on: pcl-tiergarten
-    if: inputs.RUN_CLX_BENCH == 1
+    if: |
+      (github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && inputs.RUN_CLX_BENCH) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     needs: Check_LLVM
     steps:
       - uses: actions/checkout@v4
-      - name: Coffee Lake Base
+      - name: CLX Base
         run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -b -p"
-          ${{ env.SRUN }} --partition=clxap --time=2:00:00 --constraint=\"notrb\" -- $CMD
+          CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
+                ${{ github.workspace }}/scripts/github/benchmark.sh -b -p"
+          ${{ env.SRUN }} --partition=clxap --time=0:30:00 -- $CMD
 
   TPP-MLIR-CLX-OMP:
     runs-on: pcl-tiergarten
-    if: inputs.RUN_CLX_BENCH == 1
+    if: |
+      (github.event_name == 'push') || 
+      (github.event_name == 'workflow_dispatch' && inputs.RUN_CLX_BENCH) ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'benchmark-full'))
     needs: Check_LLVM
     steps:
       - uses: actions/checkout@v4
-      - name: Coffee Lake OpenMP
+      - name: CLX OpenMP
         run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -o"
-          ${{ env.SRUN }} --partition=clxap --time=2:00:00 --constraint=\"notrb\" -- $CMD
-
-  TPP-MLIR-ADL-BASE:
-    runs-on: pcl-tiergarten
-    if: inputs.RUN_ADL_BENCH == 1
-    needs: Check_LLVM
-    steps:
-      - uses: actions/checkout@v4
-      - name: Raptor Lake Base
-        run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -b -p"
-          ${{ env.SRUN }} --partition=rpl --time=2:00:00 --constraint=\"notrb\" -- $CMD
-
-  TPP-MLIR-ADL-OMP:
-    runs-on: pcl-tiergarten
-    if: inputs.RUN_ADL_BENCH == 1
-    needs: Check_LLVM
-    steps:
-      - uses: actions/checkout@v4
-      - name: Raptor Lake OpenMP
-        run: |-
-          CMD="KIND=Release COMPILER=clang LINKER=lld BUILDKITE_BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
-               ${{ github.workspace }}/scripts/buildkite/benchmark.sh -o"
-          ${{ env.SRUN }} --partition=rpl --time=2:00:00 --constraint=\"notrb\" -- $CMD
+          CMD="KIND=Release COMPILER=clang LINKER=lld BENCHMARK_NUM_ITER=${{ env.NUM_ITER }} \
+                ${{ github.workspace }}/scripts/github/benchmark.sh -o"
+          ${{ env.SRUN }} --partition=clxap --time=0:30:00 -- $CMD

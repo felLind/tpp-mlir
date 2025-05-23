@@ -3,12 +3,8 @@ if (NOT LIBXSMMROOT)
   message(FATAL_ERROR "LIBXSMM is a hard dependency for LIBXSMM-DNN")
 endif()
 
-# Use LIBXSMM_DNN (make PREFIX=/path/to/libxsmm-dnn) given by LIBXSMM_DNNROOT
-set(LIBXSMM_DNNROOT $ENV{LIBXSMM_DNNROOT})
-# Fetch LIBXSMM_DNN (even if LIBXSMM_DNNROOT is present)
-set(LIBXSMM_DNNFETCH $ENV{LIBXSMM_DNNFETCH})
-
-if(LIBXSMM_DNNROOT AND NOT LIBXSMM_DNNFETCH)
+# Make to pass full path to LIBXSMM_DNNROOT
+if(EXISTS ${LIBXSMM_DNNROOT})
   message(STATUS "Found LIBXSMM_DNN (${LIBXSMM_DNNROOT})")
 else()
   message(STATUS "Fetching LIBXSMM_DNN")
@@ -16,8 +12,8 @@ else()
 
   FetchContent_Declare(
     xsmm_dnn
-    URL https://github.com/libxsmm/libxsmm-dnn/archive/6e042517be4b975f431fb92d803ddc5d9dafcc64.tar.gz
-    URL_HASH SHA256=2d92577b865a823ec223a675bea1537a61b717a2b8fb9f06dd7e46a19183df60
+    URL https://github.com/libxsmm/libxsmm-dnn/archive/6757af7d214a49b06e5289b9784b4b99b4a35aaf.tar.gz
+    URL_HASH SHA256=f7c879f2aed6a1562f3e15ea57637845181c6ae4267ec71975ab7b11cd16dfa4
   )
 
   FetchContent_GetProperties(xsmm_dnn)
@@ -46,6 +42,6 @@ target_include_directories(xsmm_dnn_mlp PRIVATE ${XSMM_DNN_INCLUDE_DIRS})
 target_link_libraries(xsmm_dnn_mlp PRIVATE xsmm)
 if (OPENMP_FOUND)
   target_compile_options(xsmm_dnn_mlp PRIVATE ${OpenMP_C_FLAGS})
-  target_link_libraries(xsmm_dnn_mlp PRIVATE omp)
+  target_link_libraries(xsmm_dnn_mlp PRIVATE ${OpenMP_C_LIBRARIES})
 endif()
 install(TARGETS xsmm_dnn_mlp RUNTIME DESTINATION bin)

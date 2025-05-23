@@ -23,6 +23,7 @@
 #include "TPP/Dialect/Xsmm/XsmmDialect.h"
 #include "Einsum/Dialect/Einsum/EinsumDialect.h"
 #include "TPP/PassUtils.h"
+#include "TPP/Transforms/Utils/VNNIUtils.h"
 #include "mlir/Transforms/Passes.h"
 
 #include <string>
@@ -57,6 +58,26 @@ llvm::cl::list<unsigned>
 llvm::cl::opt<bool> linalgToVector("linalg-to-vector",
                                    llvm::cl::desc("Lower linalg to vector"),
                                    llvm::cl::init(false));
+
+llvm::cl::opt<bool> vectorToKernel("vector-to-kernels",
+                                   llvm::cl::desc("Lower vector to micro-kernels"),
+                                   llvm::cl::init(false)); 
+
+llvm::cl::opt<bool> lowerPackUnpackWithoutTranspose(
+    "lower-pack-unpack-without-transpose",
+    llvm::cl::desc("Lower packs and unpacks reverting any dim permutations"),
+    llvm::cl::init(false));
+
+
+llvm::cl::list<unsigned>
+    registerBlocking("registerBlocking", llvm::cl::desc("Register blocking tile sizes for brgemm operation"),
+            llvm::cl::list_init<unsigned>(SmallVector<unsigned>{8, 32}),
+            llvm::cl::CommaSeparated);
+
+
+llvm::cl::opt<bool> vectorToXSMM("vector-to-XSMM",
+                                 llvm::cl::desc("Lower vector to XSMM"),
+                                 llvm::cl::init(false));
 
 namespace mlir {
 namespace tpp {
@@ -130,8 +151,17 @@ private:
       pm.addPass(createGpuPipeline(GpuPipelineOptions{gpuBackend}));
     } else {
       // Apply the default preprocessing pass
-      DefaultTppPassesOptions tppDefaultOptions{linalgToLoops, parallelTaskGrid,
-                                                linalgToVector};
+      DefaultTppPassesOptions tppDefaultOptions; 
+      tppDefaultOptions.linalgToLoops = linalgToLoops;
+      tppDefaultOptions.parallelTaskGrid = SmallVector<unsigned>{
+          parallelTaskGrid.begin(), parallelTaskGrid.end()};
+      tppDefaultOptions.linalgToVector = linalgToVector;
+      tppDefaultOptions.vectorToXSMM = vectorToXSMM;
+      tppDefaultOptions.lowerPackUnpackWithoutTranspose = lowerPackUnpackWithoutTranspose;
+      tppDefaultOptions.registerBlocking =
+          SmallVector<unsigned>{registerBlocking.begin(), registerBlocking.end()};
+      tppDefaultOptions.vectorToKernel = vectorToKernel;
+
       pm.addPass(createDefaultTppPasses(tppDefaultOptions));
     }
 
@@ -160,27 +190,35 @@ private:
       pm.addPass(createPrintIRPass());
 
     // Lower to LLVM
-    pm.addPass(createConvertVectorToLLVMPass());
+    ConvertVectorToLLVMPassOptions options;
+    options.amx = vnni::utils::hasAMX();
+    #if defined(__x86_64__)
+    	options.x86Vector = true;
+    #endif
+    pm.addPass(createConvertVectorToLLVMPass(options));
     pm.addPass(createFinalizeMemRefToLLVMConversionPass());
-    pm.addPass(createConvertSCFToCFPass());
-    if (defParallel)
-      pm.addPass(createConvertOpenMPToLLVMPass());
-    pm.addPass(createConvertMathToLLVMPass());
+    pm.addPass(createSCFToControlFlowPass());
 
     pm.addNestedPass<func::FuncOp>(createGpuAsyncRegionPass());
     pm.addPass(createGpuToLLVMConversionPass());
     GpuModuleToBinaryPassOptions gpuModuleToBinaryPassOptions;
     gpuModuleToBinaryPassOptions.compilationTarget = "fatbin";
     pm.addPass(createGpuModuleToBinaryPass(gpuModuleToBinaryPassOptions));
+    pm.addPass(createConvertMathToLLVMPass());
     pm.addPass(createAsyncToAsyncRuntimePass());
     pm.addPass(createAsyncRuntimeRefCountingPass());
     pm.addPass(createConvertAsyncToLLVMPass());
+    pm.addPass(createConvertIndexToLLVMPass());
 
     pm.addPass(createConvertFuncToLLVMPass());
 
-    pm.addNestedPass<func::FuncOp>(createArithToLLVMConversionPass());
-    pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-    pm.addNestedPass<func::FuncOp>(createCSEPass());
+    pm.addPass(createArithToLLVMConversionPass());
+    pm.addPass(createConvertControlFlowToLLVMPass());
+    if (defParallel)
+      pm.addPass(createConvertOpenMPToLLVMPass());
+    pm.addPass(createUBToLLVMConversionPass());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
     pm.addPass(createReconcileUnrealizedCastsPass());
 
     // Anything useful has been lowered by now.

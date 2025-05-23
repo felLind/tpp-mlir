@@ -8,6 +8,7 @@
 
 #include "TPP/Passes.h"
 #include "TPP/Transforms/Transforms.h"
+#include "TPP/Transforms/Utils/DLTIUtils.h"
 #include "TPP/Transforms/Utils/TransformUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -20,6 +21,8 @@
 #include "mlir/Interfaces/TilingInterface.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
+
+#include <optional>
 #include <queue>
 
 using namespace mlir;
@@ -421,15 +424,18 @@ static FailureOr<scf::SCFTileAndFuseResult> fuseWithEltwise(
   tileAndFuseOptions.setTilingOptions(options);
   scf::SCFTileAndFuseOptions::ControlFnTy controlFn =
       [&](tensor::ExtractSliceOp candidateSliceOp, OpResult originalProducer,
-          bool isDestinationOperand) {
-        Operation *candidateOp = originalProducer.getOwner();
-        if (!candidateOp || worklist.count(candidateOp) == 0 ||
-            (alreadyFusedOps.count(candidateOp) &&
-             !isa<linalg::FillOp>(candidateOp))) {
-          return std::make_tuple(false, false);
-        }
-        return std::make_tuple(true, false);
-      };
+          bool isDestinationOperand)
+      -> std::optional<scf::SCFTileAndFuseOptions::ControlFnResult> {
+    Operation *candidateOp = originalProducer.getOwner();
+    if (!candidateOp || worklist.count(candidateOp) == 0 ||
+        (alreadyFusedOps.count(candidateOp) &&
+         !isa<linalg::FillOp>(candidateOp))) {
+      return std::nullopt;
+    }
+    scf::SCFTileAndFuseOptions::ControlFnResult res;
+    res.yieldProducerReplacement = false;
+    return res;
+  };
   tileAndFuseOptions.setFusionControlFn(controlFn);
   FailureOr<scf::SCFTileAndFuseResult> tileAndFuseResult =
       scf::tileConsumerAndFuseProducersUsingSCF(rewriter, consumer,
@@ -452,28 +458,10 @@ static int64_t getTileForDim(linalg::LinalgOp linalgOp, unsigned dim) {
   int64_t tile = 32;
 
   // Check if a tile size hint is associated to the IR via DLTI.
-  auto deriveFromDLTI = [&](ModuleOp moduleOp) {
-    if (!moduleOp)
-      return;
-    TargetSystemSpecInterface sysSpec = moduleOp.getTargetSystemSpec();
-    if (!sysSpec)
-      return;
-    auto deviceId = StringAttr::get(linalgOp->getContext(), "CPU");
-    auto deviceSpec = sysSpec.getDeviceSpecForDeviceID(deviceId);
-    if (!deviceSpec)
-      return;
-    auto tileSizeId = StringAttr::get(linalgOp->getContext(), "tile_size");
-    DataLayoutEntryInterface entry =
-        (*deviceSpec).getSpecForIdentifier(tileSizeId);
-    if (!entry)
-      return;
-    Attribute value = entry.getValue();
-    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(value))
+  auto tileValue = dlti::utils::query(linalgOp, {"CPU", "tile_size"});
+  if (succeeded(tileValue))
+    if (auto intAttr = llvm::dyn_cast<IntegerAttr>(*tileValue))
       tile = intAttr.getInt();
-    // TODO: might want to print a warning if tile_size exists as a key but the
-    //       associated attribute has an unexpected type.
-  };
-  deriveFromDLTI(linalgOp->getParentOfType<mlir::ModuleOp>());
 
   SmallVector<int64_t, 4> loopsRange = linalgOp.getStaticLoopRanges();
   if (loopsRange[dim] == ShapedType::kDynamic)
@@ -736,7 +724,7 @@ struct TileConsumerAndFuseProducers
       // Attempt to recover named ops.
       RewritePatternSet patterns(&ctx);
       linalg::populateLinalgDeGeneralizationPatterns(patterns);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
 
     int64_t numIters = this->numIters;
@@ -761,7 +749,7 @@ struct TileConsumerAndFuseProducers
         // TODO: Remove the generalization of named ops after resolving the
         // above dependency with "populateFoldUnitExtentDimsViaSlicesPatterns".
         linalg::populateLinalgNamedOpsGeneralizationPatterns(patterns);
-        (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+        (void)applyPatternsGreedily(getOperation(), std::move(patterns));
       }
     } while (--numIters);
 
@@ -769,7 +757,7 @@ struct TileConsumerAndFuseProducers
       // Patterns for scf.for.
       RewritePatternSet patterns(&ctx);
       patterns.add<ReplaceIterArgs>(&ctx);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
 
     {
@@ -777,7 +765,7 @@ struct TileConsumerAndFuseProducers
       RewritePatternSet patterns(&ctx);
       if (this->useForAll)
         linalgx::utils::populateScfForToForAllRewritePattern(patterns);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
 
     {
@@ -785,7 +773,7 @@ struct TileConsumerAndFuseProducers
       RewritePatternSet patterns(&ctx);
       linalg::populateLinalgDeGeneralizationPatterns(patterns);
       scf::ForallOp::getCanonicalizationPatterns(patterns, &ctx);
-      (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+      (void)applyPatternsGreedily(getOperation(), std::move(patterns));
     }
   }
 };
@@ -816,7 +804,7 @@ struct ElementWiseFusion : tpp::impl::ElementWiseFusionBase<ElementWiseFusion> {
 
     linalg::populateElementwiseOpsFusionPatterns(patterns,
                                                  fuseElementwiseOpsControlFn);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 

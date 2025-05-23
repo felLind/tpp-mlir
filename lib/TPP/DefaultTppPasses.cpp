@@ -26,6 +26,8 @@
 #include "TPP/PassUtils.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <string>
+
 using namespace mlir;
 using namespace mlir::tpp;
 
@@ -74,10 +76,41 @@ private:
   void constructPipeline() override {
     pm.addPass(createPrintIRPass());
     pm.addPass(mlir::einsum::createConvertEinsumToLoops());
+    // We currently have four branches:
+    //  * Linalg-to-XSMM: the default path, no options needed
+    //  * Linalg-to-Vector: Enable with `linalg-to-vector` flag.
+    //    No further changes done to the IR, lowers straigt to LLVM.
+    //  * Vector-to-XSMM: Enable with `vector-to-xsmm` flag, forces
+    //    `linalg-to-vector` and lowers vector patterns to libxsmm calls.
+    //  * Vector-to-Kernel: Enable with `vector-to-kernel` flag, forces
+    //    `linalg-to-vector` and lowers vector patterns to libxsmm-like
+    //    micro-kernels via specialized lowering of certain vector patterns.
+    assert(!(vectorToXSMM && vectorToKernel) &&
+           "XSMM and Kernel lowering are mutually exclusive");
+    bool forceLinalgToVector = (vectorToXSMM || vectorToKernel);
+
+    // List of operations to skip when lowering Linalg to XSMM / Kernel.
+    // This allows further passes to lower to vector, function, codegen
+    // Default is to not skip anything. Only enable when needed.
+    SmallVector<std::string> skipOperations;
+    // General "linalg-to-vector" choice needs to skip all XSMM matching at
+    // linalg level.
+    if (linalgToVector || vectorToKernel) {
+      skipOperations.push_back("all");
+    }
+    if (vectorToXSMM) {
+      skipOperations.clear();
+      skipOperations.push_back("unary");
+      skipOperations.push_back("transpose");
+      skipOperations.push_back("vnni");
+    }
+
+    // Pipeline building starts here.
+    pm.addPass(createFoldAddIntoDest());
     if (linalgToLoops) {
       // Lower linalg directly to loops.
       // Skip all TPP transformations.
-      // Generalize tensor.pack and tensor.unpack.
+      // Generalize linalg.pack and linalg.unpack.
       pm.addPass(createLowerPacksAndUnPacks());
       pm.addNestedPass<func::FuncOp>(createDecomposeAggregatedOps());
       pm.addPass(createBufferize());
@@ -90,7 +123,8 @@ private:
       pm.addPass(createRewriteBatchMatmulToMatmul());
 
       // Applies a set of passes at the linalg level to fuse and pack.
-      pm.addPass(createTppMapping());
+      TppMappingOptions tppMappingOptions{lowerPackUnpackWithoutTranspose};
+      pm.addPass(createTppMapping(tppMappingOptions));
 
       pm.addPass(createPrintIRPass());
       // Generalize tensor.pack and tensor.unpack.
@@ -102,24 +136,39 @@ private:
       pm.addNestedPass<func::FuncOp>(createDecomposeAggregatedOps());
       // Bufferize: tensor->memref.
       pm.addPass(createBufferize());
-      pm.addPass(createPrintIRPass());
-      // TODO: This flag will be removed once the vector path becomes the
-      // default lowering path.
-      if (linalgToVector) {
+
+      // Lower Linalg to XSMM.
+      pm.addNestedPass<func::FuncOp>(
+          createLinalgLowering(LinalgLoweringOptions{skipOperations}));
+
+      if (linalgToVector || forceLinalgToVector) {
+        // Vectorizes the remaining Linalg operations
+        pm.addNestedPass<func::FuncOp>(createBrgemmLinalgTiling(
+            BrgemmLinalgTilingOptions{SmallVector<unsigned>{*registerBlocking}}));
+        pm.addNestedPass<func::FuncOp>(createLoopInvariantCodeMotionPass());
         pm.addNestedPass<func::FuncOp>(createVectorizationPass());
-        pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
-      } else {
-        // Lower all Tile operations.
-        pm.addNestedPass<func::FuncOp>(createLinalgLowering());
-        pm.addPass(createPrintIRPass());
+
+        // Please note, canonicalizer should be after hoisting pass because
+        // it fuses outer tiling loops and it results in no pattern
+        // matching for hoisting pass. Moved inside VectorToKernel Path.
+
+        if (vectorToXSMM) {
+          pm.addPass(createVectorToXSMM());
+        }
+        if (vectorToKernel) {
+          pm.addPass(createVectorToKernel());
+        }
       }
-      pm.addPass(createCleanup()); 
+
+      // Final cleanup.
+      pm.addPass(createCleanup());
     }
 
     // Convert forAll to parallel loops should run after bufferization
     // as scf.parallel does not handle tensor.
-     pm.addPass(createConvertForAllToParallelOp());
-    LowLevelParallelizationOptions LowLevelParallelization{parallelTaskGrid};
+    pm.addPass(createConvertForAllToParallelOp());
+    LowLevelParallelizationOptions LowLevelParallelization{
+        SmallVector<unsigned>{*parallelTaskGrid}};
 
     if (linalgToVector) {
       pm.addPass(createConvertVectorToSCFPass());

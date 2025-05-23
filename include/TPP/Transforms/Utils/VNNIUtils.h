@@ -15,18 +15,19 @@
 
 namespace mlir {
 class Type;
-class MemRefType;
+class ShapedType;
 class OpOperand;
 class AffineDimExpr;
 class AffineMap;
+class VectorType;
+class Operation;
 
 namespace linalg {
-class GenericOp;
+class LinalgOp;
 } // namespace linalg
 
 namespace vnni {
 namespace utils {
-
 enum class VnniOperandRank {
   TRANSPOSE = 3,
   GEMM = 3,
@@ -34,17 +35,28 @@ enum class VnniOperandRank {
   BRGEMM_OUTS = 3
 };
 
-// Return the VNNI blocking factor: 2 for BF16 and 4 for BF8.
-std::optional<int64_t> getVnniBlockingFactor(Type type);
+// Returns True if the current architecture supports AMX instructions.
+bool hasAMX();
 
-// Return true if the memref is in VNNI layout with rank `expectedRank`.
-bool isInVnniLayout(VnniOperandRank expectedRank, MemRefType memref);
+// Return the VNNI blocking factor if it can be determined for the given type or
+// zero, otherwise.
+// Optionally, an operation can be provided to give access to DLTI.
+unsigned getVnniBlockingFactor(Type type, Operation *op = nullptr);
 
-// Return the first AffineDimExpr in the map `affineMap`
-// with a VNNI layout pattern (AffineDimExpr floordiv VNNI).
-FailureOr<AffineDimExpr> isInVnniLayout(linalg::GenericOp linalgOp,
-                                        AffineMap affineMap,
-                                        int64_t blockingFactor);
+// Return true if the shaped type is in VNNI layout with rank `expectedRank`.
+// Optionally, the check can be constrained to a specific VNNI blocking factor.
+bool isInVnniLayout(VnniOperandRank expectedRank, ShapedType shape,
+                    std::optional<unsigned> blockingFactor = std::nullopt);
+
+// Return true if the shaped type is in VNNI layout with rank `expectedRank`.
+// Optionally, the check can be constrained to a specific VNNI blocking factor.
+bool isInVnniLayout(int64_t expectedRank, ShapedType shape,
+                    std::optional<unsigned> blockingFactor = std::nullopt);
+
+// Return true if the linalg operation is in VNNI layout.
+// Optionally, the check can be constrained to a specific VNNI blocking factor.
+bool isInVnniLayout(linalg::LinalgOp linalgOp,
+                    std::optional<unsigned> blockingFactor = std::nullopt);
 
 } // namespace utils
 } // namespace vnni

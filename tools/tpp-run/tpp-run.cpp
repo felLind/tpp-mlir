@@ -23,6 +23,7 @@
 #include "llvm/Target/TargetOptions.h"
 
 #include "TPP/Transforms/Utils/TensorInit.h"
+#include "libxsmm.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -158,6 +159,10 @@ static LogicalResult prepareMLIRKernel(Operation *op,
   // A set of default passes that lower any input IR to LLVM
   PassManager passManager(module.getContext());
 
+  // Propagate pass manager's command-line options.
+  if (failed(applyPassManagerCLOptions(passManager)))
+    return failure();
+
   tpp::TppRunnerWrapperOptions wrapperOpts;
   wrapperOpts.kernelName = options.mainFuncName;
   wrapperOpts.kernelType = options.mainFuncType;
@@ -187,7 +192,7 @@ static LogicalResult prepareMLIRKernel(Operation *op,
 
 std::unique_ptr<llvm::Module> lowerToLLVMIR(Operation *module,
                                             llvm::LLVMContext &llvmContext) {
-  // Default lowering for mlir-cpu-runner
+  // Default lowering for mlir-runner
   auto llvmModule = translateModuleToLLVMIR(module, llvmContext);
   assert(llvmModule);
 
@@ -213,7 +218,7 @@ std::unique_ptr<llvm::Module> lowerToLLVMIR(Operation *module,
     targetOptions.UnsafeFPMath = true;
     targetOptions.AllowFPOpFusion = llvm::FPOpFusion::FPOpFusionMode::Fast;
     targetMachine.reset(target->createTargetMachine(
-        triple, cpuName, "+" + fpuName, targetOptions,
+        llvm::Triple(triple), cpuName, "+" + fpuName, targetOptions,
         /* reloc model */ std::nullopt,
         /* code model */ std::nullopt, codeGenOpt));
     if (!targetMachine) {
@@ -266,6 +271,9 @@ int main(int argc, char **argv) {
   if (failed(validateInput()))
     return 1;
 
+  // Initialize the underlying platform
+  // TODO: Move this to use the target information flags
+  libxsmm_init();
   // Initialize the LLVM machinery
   llvm::InitLLVM y(argc, argv);
   llvm::InitializeNativeTarget();
@@ -274,6 +282,11 @@ int main(int argc, char **argv) {
 
   // Initialize GPU-related LLVM machinery
   tpp::initializeGpuTargets();
+
+  // Register all passes to expose them for debugging
+  mlir::registerAllPasses();
+  mlir::tpp::registerTppCompilerPasses();
+  mlir::tpp::registerTppPassBundlePasses();
 
   // Add the following to include *all* MLIR Core dialects, or selectively
   // include what you need like above. You only need to register dialects that
@@ -287,6 +300,10 @@ int main(int argc, char **argv) {
   registerAllToLLVMIRTranslations(registry);
   mlir::linalg::registerTransformDialectExtension(registry);
   mlir::tensor::registerTransformDialectExtension(registry);
+
+  // Add pass manager CLI debug options - exposes IR printing capabilities
+  // same as in opt tool
+  mlir::registerPassManagerCLOptions();
 
   // This is how we integrate with the pipeline
   JitRunnerConfig config;

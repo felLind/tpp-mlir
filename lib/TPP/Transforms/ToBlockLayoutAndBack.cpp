@@ -58,13 +58,13 @@ static Value toPackLayoutImpl(OpBuilder &builder, Location loc, Value input,
   SmallVector<int64_t> staticTiles;
   dispatchIndexOpFoldResults(tiles, dynamicTiles, staticTiles);
   RankedTensorType result =
-      tensor::PackOp::inferPackedType(cast<RankedTensorType>(input.getType()),
+      linalg::PackOp::inferPackedType(cast<RankedTensorType>(input.getType()),
                                       staticTiles, innerDimsPos, outerDimsPerm);
   auto inputType = cast<RankedTensorType>(input.getType());
   ArrayRef<int64_t> shape = result.getShape();
   Value output =
       builder.create<tensor::EmptyOp>(loc, shape, inputType.getElementType());
-  return builder.create<tensor::PackOp>(loc, input, output, innerDimsPos, tiles,
+  return builder.create<linalg::PackOp>(loc, input, output, innerDimsPos, tiles,
                                         /*paddingValue=*/std::nullopt,
                                         outerDimsPerm);
 }
@@ -76,39 +76,38 @@ static Value toUnPackLayoutImpl(OpBuilder &builder, Location loc, Value input,
                                 ArrayRef<int64_t> outerDimsPerm) {
   if (auto fillOp = output.getDefiningOp<linalg::FillOp>())
     output = fillOp.getOutputs()[0];
-  return builder.create<tensor::UnPackOp>(loc, input, output, innerDimPos,
+  return builder.create<linalg::UnPackOp>(loc, input, output, innerDimPos,
                                           tiles, outerDimsPerm);
 }
 
 static Value handleLayout_VNNI(OpBuilder &builder, Location loc, Value input,
-                               ArrayRef<OpFoldResult> tiles) {
+                               ArrayRef<OpFoldResult> tiles, int64_t kDimPos) {
   assert(tiles.size() == 1 && "expect 1 block for VNNI");
-  SmallVector<int64_t> innerDimPos = {
-      cast<ShapedType>(input.getType()).getRank() - 2};
-  return toPackLayoutImpl(builder, loc, input, tiles, innerDimPos,
+  return toPackLayoutImpl(builder, loc, input, tiles,
+                          SmallVector<int64_t>{kDimPos},
                           /*outerDimsPerm=*/{});
 }
 
 static Value handleBRGemmLayout_VNNI(OpBuilder &builder, Location loc,
-                                     Value input,
-                                     ArrayRef<OpFoldResult> tiles) {
+                                     Value input, ArrayRef<OpFoldResult> tiles,
+                                     int64_t kDimPos) {
   assert(tiles.size() == 1 && "expect 1 block for VNNI");
-  SmallVector<int64_t> innerDimPos = {1};
-  return toPackLayoutImpl(builder, loc, input, tiles, innerDimPos,
+  return toPackLayoutImpl(builder, loc, input, tiles,
+                          SmallVector<int64_t>{kDimPos},
                           /*outerDimsPerm=*/{});
 }
 
-// Helper function to pack from NC to [N/2][C][2].
+// Helper function to pack from [outer][K][inner] to [outer][K/2][inner][2].
 static Value toPackLayout_VNNI(OpBuilder &builder, Location loc, Value input,
-                               ArrayRef<OpFoldResult> tiles) {
-  return handleLayout_VNNI(builder, loc, input, tiles);
+                               ArrayRef<OpFoldResult> tiles, int64_t kDimPos) {
+  return handleLayout_VNNI(builder, loc, input, tiles, kDimPos);
 }
 
-// Helper function to pack from [N][K][C] to [N][K/2][C][2].
+// Helper function to pack from [outer][K][inner] to [outer][K/2][inner][2].
 static Value toPackBRGemmLayout_VNNI(OpBuilder &builder, Location loc,
-                                     Value input,
-                                     ArrayRef<OpFoldResult> tiles) {
-  return handleBRGemmLayout_VNNI(builder, loc, input, tiles);
+                                     Value input, ArrayRef<OpFoldResult> tiles,
+                                     int64_t kDimPos) {
+  return handleBRGemmLayout_VNNI(builder, loc, input, tiles, kDimPos);
 }
 
 static Value handleLayoutNCHW_NCHWc(OpBuilder &builder, Location loc,
@@ -328,41 +327,48 @@ mlir::linalgx::packVNNIMatmulOp(RewriterBase &rewriter,
   if (matmulOp.hasPureBufferSemantics())
     return rewriter.notifyMatchFailure(matmulOp, "require tensor semantics");
 
-  if (failed(linalgx::utils::isContraction(matmulOp)))
+  auto dims = linalgx::utils::isContraction(matmulOp);
+  if (failed(dims))
     return rewriter.notifyMatchFailure(matmulOp, "require matmul semantics");
 
   OpOperand &operandB = matmulOp->getOpOperand(1);
   auto blockingFactor =
-      vnni::utils::getVnniBlockingFactor(operandB.get().getType());
+      vnni::utils::getVnniBlockingFactor(operandB.get().getType(), matmulOp);
   if (!blockingFactor) {
     return rewriter.notifyMatchFailure(matmulOp,
                                        "unsupported blocking factor for type");
   }
 
-  AffineMap mapOperandB = matmulOp.getMatchingIndexingMap(&operandB);
-  if (succeeded(vnni::utils::isInVnniLayout(matmulOp, mapOperandB,
-                                            *blockingFactor))) {
+  if (vnni::utils::isInVnniLayout(matmulOp)) {
     return rewriter.notifyMatchFailure(matmulOp, "already packed to VNNI");
   }
 
   Location loc = matmulOp.getLoc();
   SmallVector<OpFoldResult> tilesOnSmallK = {
-      rewriter.getI64IntegerAttr(*blockingFactor)};
-  // reshape input B.
-  Value packedMatrixB =
-      toPackLayout_VNNI(rewriter, loc, operandB.get(), tilesOnSmallK);
+      rewriter.getI64IntegerAttr(blockingFactor)};
+  SmallVector<std::pair<Value, unsigned>> kOperands;
+  matmulOp.mapIterationSpaceDimToAllOperandDims(dims->k.back(), kOperands);
+  if (kOperands.size() != 2)
+    return rewriter.notifyMatchFailure(matmulOp,
+                                       "Invalid reduction dim operands");
+  // Reshape input A.
+  Value packedMatrixA =
+      toPackLayout_VNNI(rewriter, loc, matmulOp.getInputs()[0], tilesOnSmallK,
+                        kOperands[0].second);
+  // Reshape input B.
+  Value packedMatrixB = toPackLayout_VNNI(rewriter, loc, operandB.get(),
+                                          tilesOnSmallK, kOperands[1].second);
 
   MLIRContext *ctx = matmulOp.getContext();
   AffineExpr p1, p2, r1, p3, p4, r2, r3;
-  SmallVector<Value> packedInputs = {matmulOp.getInputs()[0], packedMatrixB};
+  SmallVector<Value> packedInputs = {packedMatrixA, packedMatrixB};
   AffineMap mapA, mapB, mapC;
   Value matrixC = matmulOp.getOutputs()[0];
 
   //            IB  JB  KB  ib  jb  kb  VNNI
   bindDims(ctx, p1, p2, r1, p3, p4, r2, r3);
-  mapA = AffineMap::get(/*dims=*/7, /*symbols=*/0, {p1, r1, p3, r2}, ctx);
-  mapB = AffineMap::get(/*dims=*/7, /*symbols=*/0,
-                        {p2, r1, r2.floorDiv(*blockingFactor), p4, r3}, ctx);
+  mapA = AffineMap::get(/*dims=*/7, /*symbols=*/0, {p1, r1, p3, r2, r3}, ctx);
+  mapB = AffineMap::get(/*dims=*/7, /*symbols=*/0, {p2, r1, r2, p4, r3}, ctx);
   mapC = AffineMap::get(/*dims=*/7, /*symbols=*/0, {p1, p2, p3, p4}, ctx);
   auto replacementOp = rewriter.create<linalg::GenericOp>(
       loc, matrixC.getType(), packedInputs, ValueRange{matrixC},
@@ -403,30 +409,34 @@ mlir::linalgx::packVNNIBRGemmOp(RewriterBase &rewriter,
 
   Value operandB = brgemmOp.getInputs()[1];
   // Blocking factor on the `k` dimension.
-  auto blockingFactor = vnni::utils::getVnniBlockingFactor(operandB.getType());
+  auto blockingFactor =
+      vnni::utils::getVnniBlockingFactor(operandB.getType(), brgemmOp);
   if (!blockingFactor) {
     return rewriter.notifyMatchFailure(brgemmOp,
                                        "unsupported blocking factor for type");
   }
-  SmallVector<OpFoldResult> tilesOnK = {rewriter.getI64IntegerAttr(2)};
+  SmallVector<OpFoldResult> tilesOnK = {
+      rewriter.getI64IntegerAttr(blockingFactor)};
 
   Location loc = brgemmOp.getLoc();
+  // Reshape input A.
+  Value packedMatrixA = toPackBRGemmLayout_VNNI(
+      rewriter, loc, brgemmOp.getInputs()[0], tilesOnK, 2);
   // Reshape input B.
   Value packedMatrixB =
-      toPackBRGemmLayout_VNNI(rewriter, loc, operandB, tilesOnK);
+      toPackBRGemmLayout_VNNI(rewriter, loc, operandB, tilesOnK, 1);
 
   MLIRContext *ctx = brgemmOp.getContext();
   AffineExpr r1, p1, p2, r3, r4;
   AffineMap mapA, mapB, mapC;
   bindDims(ctx, r1, p1, p2, r3, r4);
-  mapA = AffineMap::get(/*dims=*/5, /*symbols=*/0, {r1, p1, r3}, ctx);
-  mapB = AffineMap::get(/*dims=*/5, /*symbols=*/0,
-                        {r1, r3.floorDiv(*blockingFactor), p2, r4}, ctx);
+  mapA = AffineMap::get(/*dims=*/5, /*symbols=*/0, {r1, p1, r3, r4}, ctx);
+  mapB = AffineMap::get(/*dims=*/5, /*symbols=*/0, {r1, r3, p2, r4}, ctx);
   mapC = AffineMap::get(/*dims=*/5, /*symbols=*/0, {p1, p2}, ctx);
 
   auto replacementOp = rewriter.create<linalg::GenericOp>(
       loc, brgemmOp.getOutputs()[0].getType(),
-      ValueRange{brgemmOp.getInputs()[0], packedMatrixB},
+      ValueRange{packedMatrixA, packedMatrixB},
       ValueRange{brgemmOp.getOutputs()[0]},
       ArrayRef<AffineMap>{mapA, mapB, mapC},
       ArrayRef<mlir::utils::IteratorType>{
@@ -552,7 +562,7 @@ struct PackMatmul : public tpp::impl::PackMatmulBase<PackMatmul> {
     linalg::populateBlockPackMatmulPatterns(patterns, packControlFn);
     linalg::populateLinalgDeGeneralizationPatterns(patterns);
 
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -588,7 +598,7 @@ struct PackConv2DNchwFchw
     MLIRContext *ctx = getOperation().getContext();
     RewritePatternSet patterns(ctx);
     patterns.add<DoItOnConv2DNchwFchw>(ctx, blockingFactors);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -624,7 +634,7 @@ struct PackConv2DNhwcHwcf
     MLIRContext *ctx = getOperation().getContext();
     RewritePatternSet patterns(ctx);
     patterns.add<DoItOnConv2DNhwcHwcf>(ctx, blockingFactors);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -664,7 +674,8 @@ struct PackVNNI : public tpp::impl::PackVNNIBase<PackVNNI> {
     RewritePatternSet patterns(ctx);
     linalg::populateLinalgDeGeneralizationPatterns(patterns);
     patterns.add<VNNIOnMatmul, VNNIOnBRGemm>(ctx);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    linalg::populateSimplifyPackAndUnpackPatterns(patterns);
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -675,29 +686,29 @@ struct PropagatePackUnPack
     RewritePatternSet patterns(ctx);
     linalg::populateDataLayoutPropagationPatterns(
         patterns, [](OpOperand *operand) { return true; });
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
-// Fold a tensor.unpack into an scf.parallel_insert.
+// Fold a linalg.unpack into an scf.parallel_insert.
 //
 // The pattern looks like:
 //
-// %p = tensor.pack %a into %b
+// %p = linalg.pack %a into %b
 // %l = scf.forall ... iter_args(%0 = %p) {
 // ...
 // }
-// %u = tensor.unpack %l into %c
+// %u = linalg.unpack %l into %c
 //
 // We will rewrite as:
 //
 // %l = scf.forall ... iter_args(%0 = %a) {
 // ...
 // }
-struct FoldUnPackIntoInsertSlice : public OpRewritePattern<tensor::UnPackOp> {
-  using OpRewritePattern<tensor::UnPackOp>::OpRewritePattern;
+struct FoldUnPackIntoInsertSlice : public OpRewritePattern<linalg::UnPackOp> {
+  using OpRewritePattern<linalg::UnPackOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(tensor::UnPackOp unPackOp,
+  LogicalResult matchAndRewrite(linalg::UnPackOp unPackOp,
                                 PatternRewriter &rewriter) const override {
     if (!unPackOp.getOuterDimsPerm().empty())
       return failure();
@@ -720,8 +731,8 @@ struct FoldUnPackIntoInsertSlice : public OpRewritePattern<tensor::UnPackOp> {
     // Create a new scf.forall operation, updating its output.
     Value loopOperand =
         forallOp.getTiedOpOperand(forallOp->getResult(0))->get();
-    tensor::PackOp packOp =
-        dyn_cast_or_null<tensor::PackOp>(loopOperand.getDefiningOp());
+    linalg::PackOp packOp =
+        dyn_cast_or_null<linalg::PackOp>(loopOperand.getDefiningOp());
     if (!packOp)
       return failure();
     Value newLoopOperand = packOp.getSource();
@@ -812,7 +823,7 @@ struct SimplifyAndCanonicalizePack
     MLIRContext *ctx = getOperation().getContext();
     RewritePatternSet patterns(ctx);
     tpp::populateSimplifyPacking(patterns);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
@@ -820,10 +831,11 @@ struct SimplifyAndCanonicalizePack
 
 void mlir::tpp::populateSimplifyPacking(RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
-  tensor::populateSimplifyPackAndUnpackPatterns(patterns);
+  linalg::populateSimplifyPackAndUnpackPatterns(patterns);
+  linalg::populateFoldPackUnpackIntoTensorEmptyPatterns(patterns);
   tensor::populateFoldTensorEmptyPatterns(patterns);
-  tensor::PackOp::getCanonicalizationPatterns(patterns, ctx);
-  tensor::UnPackOp::getCanonicalizationPatterns(patterns, ctx);
+  linalg::PackOp::getCanonicalizationPatterns(patterns, ctx);
+  linalg::UnPackOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::ExtractSliceOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::CollapseShapeOp::getCanonicalizationPatterns(patterns, ctx);
   tensor::CastOp::getCanonicalizationPatterns(patterns, ctx);
@@ -838,6 +850,8 @@ void mlir::tpp::populateSimplifyPacking(RewritePatternSet &patterns) {
       patterns, [](OpOperand *operand) {
         return isa<tensor::ExpandShapeOp>(operand->get().getDefiningOp());
       });
+  ctx->getLoadedDialect<linalg::LinalgDialect>()->getCanonicalizationPatterns(
+      patterns);
   ctx->getLoadedDialect<tensor::TensorDialect>()->getCanonicalizationPatterns(
       patterns);
   patterns.add<FoldUnPackIntoInsertSlice>(ctx);

@@ -41,15 +41,6 @@
 using namespace mlir;
 using namespace mlir::tpp;
 
-llvm::cl::opt<bool> gpuWmma("gpu-wmma",
-                            llvm::cl::desc("Enable GPU WMMA support"),
-                            llvm::cl::init(false));
-
-llvm::cl::list<int64_t> wmmaTileSizes(
-    "wmma-tile-sizes", llvm::cl::desc("GPU WMMA tile sizes MxNxK"),
-    llvm::cl::list_init<int64_t>(SmallVector<int64_t>{16, 16, 16}),
-    llvm::cl::CommaSeparated);
-
 llvm::cl::list<int64_t>
     gpuBlockTile("gpu-block-tile", llvm::cl::desc("GPU block tile size"),
                  llvm::cl::list_init<int64_t>(SmallVector<int64_t>{128, 128}),
@@ -72,6 +63,11 @@ llvm::cl::list<int64_t>
     gpuDpasTile("dpas-tile", llvm::cl::desc("DPAS register block sizes MxNxK"),
                 llvm::cl::list_init<int64_t>(SmallVector<int64_t>{8, 16, 16}),
                 llvm::cl::CommaSeparated);
+
+// Control GPU vectorization.
+llvm::cl::opt<bool> gpuVector("gpu-vector",
+                              llvm::cl::desc("Vectorize GPU kernel"),
+                              llvm::cl::init(false));
 
 namespace mlir {
 namespace tpp {
@@ -165,30 +161,51 @@ private:
     GpuType gpuType = parseGpuOption(this->gpuBackend);
     GpuOptions gpuOptions = getGpuOptions(gpuType);
 
+    // Input preprocessing.
+    pm.addPass(createCleanup());
+    pm.addPass(createFoldIntoEltwise());
+    pm.addNestedPass<func::FuncOp>(createConvertLinalgToInplace());
+
     // Tile to split the kernel into threads and blocks.
     // Use default tiling to handle both packed and unpacked ops.
     pm.addPass(createCleanup());
-    if (gpuType == GpuType::Intel) {
-      // First split computation into grid with blocks of specified size.
-      TileConsumerAndFuseProducersOptions blockTileOptions;
-      blockTileOptions.tileSizes = gpuBlockTile;
-      blockTileOptions.minTileFactor = 1;
-      pm.addPass(createTileConsumerAndFuseProducers(blockTileOptions));
+    // First split computation into grid with blocks of specified size.
+    TileConsumerAndFuseProducersOptions blockTileOptions;
+    if (!llvm::any_of(gpuBlockTile, [](int64_t tile) { return tile == -1; }))
+      blockTileOptions.tileSizes =
+          SmallVector<int64_t>{gpuBlockTile.begin(), gpuBlockTile.end()};
+    blockTileOptions.minTileFactor = 1;
+    pm.addPass(createTileConsumerAndFuseProducers(blockTileOptions));
 
-      // Then try to further split computation into subtiles.
-      // This allows to split larger computations across multiple
-      // threads/workitems. For smaller workloads, it provides another
-      // chance for outlining.
-      TileConsumerAndFuseProducersOptions threadTileOptions;
-      threadTileOptions.tileSizes = gpuThreadTile;
-      threadTileOptions.minTileFactor = 1;
-      pm.addPass(createTileConsumerAndFuseProducers(threadTileOptions));
-    } else {
-      TileConsumerAndFuseProducersOptions tilingOptions;
-      tilingOptions.minTileFactor = 1;
-      pm.addPass(createTileConsumerAndFuseProducers(tilingOptions));
-    }
+    // Then try to further split computation into subtiles.
+    // This allows to split larger computations across multiple
+    // threads/workitems. For smaller workloads, it provides another
+    // chance for outlining.
+    TileConsumerAndFuseProducersOptions threadTileOptions;
+    if (!llvm::any_of(gpuThreadTile, [](int64_t tile) { return tile == -1; }))
+      threadTileOptions.tileSizes =
+          SmallVector<int64_t>{gpuThreadTile.begin(), gpuThreadTile.end()};
+    threadTileOptions.minTileFactor = 1;
+    pm.addPass(createTileConsumerAndFuseProducers(threadTileOptions));
     pm.addPass(createCleanup());
+
+    if (gpuVector) {
+      // Early reduction dimension splitting is incompatible with
+      // Linalg to XeGPU lowering that expects full GEMM.
+      // For now, enable only with other vectorization passes.
+      pm.addPass(createSplitReductionDim(SplitReductionDimOptions{kTile}));
+      pm.addPass(createCleanup());
+
+      // Vectorize at tensor-level to benefit from better cleanup utilities like
+      // folding.
+      // TODO: Enable vectorization when vector unrolling is added.
+      //       When vector sizes exceed hardware supported lengths,
+      //       pipeline gets stuck on GPU binary compilation step.
+      //       The vectorization can only be enabled when a pass
+      //       to resize vector operations is available.
+      pm.addPass(createGpuVectorize());
+      pm.addPass(createCleanup());
+    }
 
     // Preprocess and bufferize as further conversion requires memref
     // abstraction.
@@ -198,9 +215,9 @@ private:
     pm.addPass(createCleanup());
 
     // Convert to generic GPU ops.
-    pm.addPass(createGpuConversion(
-        GpuConversionOptions{gpuWmma, wmmaTileSizes, gpuType == GpuType::Intel,
-                             kTile, stages, gpuDpasTile}));
+    pm.addPass(createGpuConversion(GpuConversionOptions{
+        gpuType == GpuType::Intel, kTile, stages,
+        SmallVector<int64_t>{gpuDpasTile.begin(), gpuDpasTile.end()}}));
 
     // Lower GPU ops to the chosen GPU backend.
     switch (gpuType) {
@@ -212,7 +229,7 @@ private:
           gpuOptions.triple, gpuOptions.chip, gpuOptions.features}));
       break;
     }
-    case GpuType::Intel:
+    case GpuType::Intel: {
       pm.addPass(xegpu::createXeGPUFoldAliasOps());
 
       std::string clientApi = "intel";
@@ -222,6 +239,7 @@ private:
       pm.addPass(tpp::createSetSPIRVAbiAttribute(abiAttrOptions));
 
       break;
+    }
     }
 
     // Covert all local dialects like perf.
