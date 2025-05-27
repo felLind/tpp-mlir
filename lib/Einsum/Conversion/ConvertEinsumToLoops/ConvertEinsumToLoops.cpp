@@ -1,6 +1,8 @@
 //
 // Created by felix on 30.09.24.
 //
+
+#include<stdio.h>
 #include "Einsum/Dialect/Einsum/EinsumOps.h"
 #include "Einsum/Passes.h"
 #include "TPP/Dialect/Xsmm/XsmmOps.h"
@@ -78,7 +80,7 @@ struct DimensionDatas {
     data.push_back(d);
   };
 
-  ArrayRef<int64_t> get_kernel_data() {
+  std::vector<int64_t> get_kernel_data() {
     int64_t m;
     int64_t n;
     int64_t k;
@@ -102,8 +104,7 @@ struct DimensionDatas {
       lda = ldc = m;
       ldb = k;
     }
-
-    return ArrayRef<int64_t>{m, n, k, lda, ldb, ldc};
+    return {m, n, k, lda, ldb, ldc};
   }
 };
 
@@ -161,51 +162,49 @@ static LogicalResult validateConfig(DictionaryAttr config) {
 }
 
 static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> leftBuffer, TypedValue<MemRefType> rightBuffer, TypedValue<MemRefType> outBuffer,
-                               OpBuilder &b, Location loc, ValueRange localIvs) {
-  Value zero = b.create<mlir::arith::ConstantIndexOp>(loc, 0);
-  Value one = b.create<mlir::arith::ConstantIndexOp>(loc, 1);
-  
-  size_t leftRank = cast<MemRefType>(leftBuffer.getType()).getRank();
-  size_t rightRank = cast<MemRefType>(rightBuffer.getType()).getRank();
-  size_t outRank = cast<MemRefType>(outBuffer.getType()).getRank();
+                               OpBuilder &b, Location loc, ValueRange localIvs, xsmm::DataTypeAttr dtype, Value dispatched) {
+ 
+  size_t left_rank = cast<MemRefType>(leftBuffer.getType()).getRank();
+  size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
+  size_t out_rank = cast<MemRefType>(outBuffer.getType()).getRank();
 
-  SmallVector<Value> left_offsets(leftRank, zero);
-  SmallVector<Value> left_sizes(leftRank, one);
-  SmallVector<Value> left_strides(leftRank, one);
-  SmallVector<Value> right_offsets(rightRank, zero);
-  SmallVector<Value> right_sizes(rightRank, one);
-  SmallVector<Value> right_strides(rightRank, one);
-  SmallVector<Value> out_offsets(outRank, zero);
-  SmallVector<Value> out_sizes(outRank, one);
-  SmallVector<Value> out_strides(outRank, one);
+  SmallVector<int64_t> left_offsets(left_rank, 0);
+  SmallVector<int64_t> left_sizes(left_rank, 1);
+  SmallVector<int64_t> left_strides(left_rank, 1);
+  SmallVector<int64_t> left_reduced_shape;
+  SmallVector<int64_t> right_offsets(right_rank, 0);
+  SmallVector<int64_t> right_sizes(right_rank, 1);
+  SmallVector<int64_t> right_strides(right_rank, 1);
+  SmallVector<int64_t> right_reduced_shape;
+  SmallVector<int64_t> out_offsets(out_rank, 0);
+  SmallVector<int64_t> out_sizes(out_rank, 1);
+  SmallVector<int64_t> out_strides(out_rank, 1);
+  SmallVector<int64_t> out_reduced_shape;
 
-  int non_prim_idx_left = 0;
-  int non_prim_idx_right = 0;
-  int non_prim_idx_out = 0;
   for(auto it = data.data.begin(); it != data.data.end(); it++) {
     DimensionData dim = *it;
     if (dim.pos_left != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        left_sizes[dim.pos_left] = b.create<mlir::arith::ConstantIndexOp>(loc, dim.size);
+        left_sizes[dim.pos_left] = dim.size; 
+        left_reduced_shape.push_back(dim.size);
       } else {
-        left_offsets[dim.pos_left] = localIvs[non_prim_idx_left];
-        non_prim_idx_left++;
+        left_offsets[dim.pos_left] = dim.size - 1;
       }
     }
     if (dim.pos_right != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        left_sizes[dim.pos_right] = b.create<mlir::arith::ConstantIndexOp>(loc, dim.size);
-      } else {
-        left_offsets[dim.pos_right] = localIvs[non_prim_idx_right];
-        non_prim_idx_right++;
+        right_sizes[dim.pos_right] = dim.size;
+        right_reduced_shape.push_back(dim.size);
+       } else {
+        right_offsets[dim.pos_right] = dim.size - 1;
       }
     }
     if (dim.pos_out != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        left_sizes[dim.pos_out] = b.create<mlir::arith::ConstantIndexOp>(loc, dim.size);
+        out_sizes[dim.pos_out] = dim.size;
+        out_reduced_shape.push_back(dim.size);
       } else {
-        left_offsets[dim.pos_out] = localIvs[non_prim_idx_out];
-        non_prim_idx_out++;
+        out_offsets[dim.pos_out] = dim.size - 1;
       }
     }
   }
@@ -213,25 +212,15 @@ static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> 
   auto right_subview = b.create<mlir::memref::SubViewOp>(loc, rightBuffer, right_offsets, right_sizes, right_strides);
   auto out_subview = b.create<mlir::memref::SubViewOp>(loc, outBuffer, out_offsets, out_sizes, out_strides);
 
-  xsmm::GemmFlagsAttr gemmFlags =
-        xsmm::GemmFlagsAttr::get(b.getContext(), xsmm::GemmFlags::NONE);
-  //TODO: bf16! 
-  auto dtype =
-    xsmm::DataTypeAttr::get(b.getContext(), xsmm::DataType::F32);
-  IntegerType integer64 = IntegerType::get(b.getContext(), 64);
-  DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
-      b.getContext(), data.get_kernel_data());
+  auto left_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, left_subview, ArrayRef<int64_t>(left_reduced_shape));
+  auto right_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, right_subview, ArrayRef<int64_t>(right_reduced_shape));
+  auto out_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, out_subview, ArrayRef<int64_t>(out_reduced_shape));
 
-  auto flags = b.getArrayAttr(gemmFlags);
-
-  Value dispatched = b.create<xsmm::GemmDispatchOp>(
-      loc, integer64, dims, flags, dtype);
-  
   SmallVector<Value> invokeOperands;
   invokeOperands.push_back(dispatched);
-  invokeOperands.push_back(left_subview);
-  invokeOperands.push_back(right_subview);
-  invokeOperands.push_back(out_subview);
+  invokeOperands.push_back(*left_reduced_subview);
+  invokeOperands.push_back(*right_reduced_subview);
+  invokeOperands.push_back(*out_reduced_subview);
   b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
   return scf::ValueVector();
 }
@@ -260,6 +249,22 @@ struct ConvertBinaryContractionOp
     auto outBuffer = binaryContractionOp.getOut();
     auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, outMemrefType);
     rewriter.create<mlir::memref::CopyOp>(loc, outBuffer, allocBuffer);
+
+    xsmm::GemmFlagsAttr gemmFlags =
+      xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
+    //TODO: bf16! 
+    auto dtype =
+      xsmm::DataTypeAttr::get(rewriter.getContext(), xsmm::DataType::F32);
+    IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+    
+    DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+        rewriter.getContext(), ArrayRef<int64_t>(dim_data.get_kernel_data()));
+
+    auto flags = rewriter.getArrayAttr(gemmFlags);
+
+    Value dispatched = rewriter.create<xsmm::GemmDispatchOp>(
+        loc, integer64, dims, flags, dtype);
+  
 
     SmallVector<LoopWrapper, 4> loops;
     SmallVector<Value, 4> ivs;
@@ -309,10 +314,12 @@ struct ConvertBinaryContractionOp
     }
     
     rewriter.setInsertionPointToStart(loops.back().getBody());
-    scf::ValueVector results = bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs);
+    bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs, dtype, dispatched);
     rewriter.setInsertionPointToEnd(loops.back().getBody());
-    rewriter.create<scf::YieldOp>(loc, results);
- 
+    rewriter.create<scf::YieldOp>(loc, binaryContractionOp.getResult());
+    binaryContractionOp->dropAllUses();
+    rewriter.eraseOp(binaryContractionOp);
+
     return success();
   }
 };
@@ -327,7 +334,7 @@ struct ConvertEinsumToLoops
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     populateEinsumToLoopsPatterns(patterns);
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(patterns));
+    (void)applyPatternsGreedily(getOperation(), std::move(patterns));
   }
 };
 
