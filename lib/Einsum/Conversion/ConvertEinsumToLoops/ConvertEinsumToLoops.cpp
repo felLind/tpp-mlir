@@ -243,15 +243,16 @@ struct ConvertBinaryContractionOp
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
   
     auto outMemrefType = binaryContractionOp.getOut().getType();
-    
+  
     auto leftBuffer = binaryContractionOp.getLeft();
     auto rightBuffer = binaryContractionOp.getRight();
+    
     auto outBuffer = binaryContractionOp.getOut();
     auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, outMemrefType);
     rewriter.create<mlir::memref::CopyOp>(loc, outBuffer, allocBuffer);
 
     xsmm::GemmFlagsAttr gemmFlags =
-      xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
+    xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
     //TODO: bf16! 
     auto dtype =
       xsmm::DataTypeAttr::get(rewriter.getContext(), xsmm::DataType::F32);
@@ -304,7 +305,7 @@ struct ConvertBinaryContractionOp
     SmallVector<LoopWrapper, 4> rewinded_loops;
 
     //TODO better rewind
-    for (unsigned i = loops.size(); i > 0; --i) {
+    for (unsigned i = loops.size() - 1; i > 0; --i) {
       rewinded_loops.push_back(loops[i - 1]);
     }
 
@@ -314,11 +315,13 @@ struct ConvertBinaryContractionOp
     }
     
     rewriter.setInsertionPointToStart(loops.back().getBody());
-    bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs, dtype, dispatched);
+    scf::ValueVector results = bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs, dtype, dispatched);
     rewriter.setInsertionPointToEnd(loops.back().getBody());
-    rewriter.create<scf::YieldOp>(loc, binaryContractionOp.getResult());
-    binaryContractionOp->dropAllUses();
-    rewriter.eraseOp(binaryContractionOp);
+   
+    rewriter.create<scf::YieldOp>(loc, results);
+
+    SmallVector<Value> result({outBuffer});
+    rewriter.replaceOp(binaryContractionOp, result);
 
     return success();
   }
