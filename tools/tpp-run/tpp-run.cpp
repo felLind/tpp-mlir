@@ -59,6 +59,8 @@
 #include "TPP/PassBundles.h"
 #include "TPP/Passes.h"
 
+#include "Einsum/Dialect/Einsum/EinsumDialect.h"
+
 #include <algorithm>
 
 using namespace mlir;
@@ -295,6 +297,7 @@ int main(int argc, char **argv) {
   registry.insert<mlir::xsmm::XsmmDialect>();
   registry.insert<mlir::check::CheckDialect>();
   registry.insert<mlir::perf::PerfDialect>();
+  registry.insert<mlir::einsum::EinsumDialect>();
   registerAllDialects(registry);
   registerAllExtensions(registry);
   registerAllToLLVMIRTranslations(registry);

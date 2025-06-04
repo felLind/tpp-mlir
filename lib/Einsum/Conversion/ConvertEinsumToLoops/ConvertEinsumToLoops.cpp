@@ -101,9 +101,9 @@ struct DimensionDatas {
           k = d.size;
         }
       }
-      lda = ldc = m;
-      ldb = k;
     }
+    lda = ldc = m;
+    ldb = k;
     return {m, n, k, lda, ldb, ldc};
   }
 };
@@ -168,46 +168,57 @@ static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> 
   size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
   size_t out_rank = cast<MemRefType>(outBuffer.getType()).getRank();
 
-  SmallVector<int64_t> left_offsets(left_rank, 0);
-  SmallVector<int64_t> left_sizes(left_rank, 1);
-  SmallVector<int64_t> left_strides(left_rank, 1);
+  OpFoldResult zero = b.createOrFold<mlir::arith::ConstantIndexOp>(loc, 0);
+  OpFoldResult one = b.getI64IntegerAttr(1);
+
+  SmallVector<OpFoldResult> left_offsets(left_rank, zero);
+  SmallVector<OpFoldResult> left_sizes(left_rank, one);
+  SmallVector<OpFoldResult> left_strides(left_rank, one);
   SmallVector<int64_t> left_reduced_shape;
-  SmallVector<int64_t> right_offsets(right_rank, 0);
-  SmallVector<int64_t> right_sizes(right_rank, 1);
-  SmallVector<int64_t> right_strides(right_rank, 1);
+  SmallVector<OpFoldResult> right_offsets(right_rank, zero);
+  SmallVector<OpFoldResult> right_sizes(right_rank, one);
+  SmallVector<OpFoldResult> right_strides(right_rank, one);
   SmallVector<int64_t> right_reduced_shape;
-  SmallVector<int64_t> out_offsets(out_rank, 0);
-  SmallVector<int64_t> out_sizes(out_rank, 1);
-  SmallVector<int64_t> out_strides(out_rank, 1);
+  SmallVector<OpFoldResult> out_offsets(out_rank, zero);
+  SmallVector<OpFoldResult> out_sizes(out_rank, one);
+  SmallVector<OpFoldResult> out_strides(out_rank, one);
   SmallVector<int64_t> out_reduced_shape;
+
+  int64_t pos_left = 0;
+  int64_t pos_right = 0;
+  int64_t pos_out = 0;
 
   for(auto it = data.data.begin(); it != data.data.end(); it++) {
     DimensionData dim = *it;
     if (dim.pos_left != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        left_sizes[dim.pos_left] = dim.size; 
+        left_sizes[dim.pos_left] =  b.getI64IntegerAttr(dim.size);
         left_reduced_shape.push_back(dim.size);
       } else {
-        left_offsets[dim.pos_left] = dim.size - 1;
+        left_offsets[dim.pos_left] = localIvs[pos_left];
       }
+      pos_left++;
     }
     if (dim.pos_right != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        right_sizes[dim.pos_right] = dim.size;
+        right_sizes[dim.pos_right] =  b.getI64IntegerAttr(dim.size);
         right_reduced_shape.push_back(dim.size);
        } else {
-        right_offsets[dim.pos_right] = dim.size - 1;
+        right_offsets[dim.pos_right] = localIvs[pos_right];
       }
+      pos_right++;
     }
     if (dim.pos_out != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        out_sizes[dim.pos_out] = dim.size;
+        out_sizes[dim.pos_out] = b.getI64IntegerAttr(dim.size);
         out_reduced_shape.push_back(dim.size);
       } else {
-        out_offsets[dim.pos_out] = dim.size - 1;
+        out_offsets[dim.pos_out] = localIvs[pos_out];
       }
+      pos_out++;
     }
   }
+
   auto left_subview = b.create<mlir::memref::SubViewOp>(loc, leftBuffer, left_offsets, left_sizes, left_strides);
   auto right_subview = b.create<mlir::memref::SubViewOp>(loc, rightBuffer, right_offsets, right_sizes, right_strides);
   auto out_subview = b.create<mlir::memref::SubViewOp>(loc, outBuffer, out_offsets, out_sizes, out_strides);
@@ -221,6 +232,7 @@ static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> 
   invokeOperands.push_back(*left_reduced_subview);
   invokeOperands.push_back(*right_reduced_subview);
   invokeOperands.push_back(*out_reduced_subview);
+  
   b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
   return scf::ValueVector();
 }
@@ -241,16 +253,12 @@ struct ConvertBinaryContractionOp
   
     Value zero = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 0);
     Value one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
-  
-    auto outMemrefType = binaryContractionOp.getOut().getType();
-  
+   
     auto leftBuffer = binaryContractionOp.getLeft();
     auto rightBuffer = binaryContractionOp.getRight();
     
     auto outBuffer = binaryContractionOp.getOut();
-    auto allocBuffer = rewriter.create<mlir::memref::AllocOp>(loc, outMemrefType);
-    rewriter.create<mlir::memref::CopyOp>(loc, outBuffer, allocBuffer);
-
+   
     xsmm::GemmFlagsAttr gemmFlags =
     xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
     //TODO: bf16! 
