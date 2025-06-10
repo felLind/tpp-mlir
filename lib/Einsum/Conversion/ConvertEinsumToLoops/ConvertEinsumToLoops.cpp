@@ -121,10 +121,9 @@ static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryC
   auto strides_left =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_left"));
   auto strides_right =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_right"));
   auto strides_out =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_out"));
-
   auto parallel_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("parallel_types"));
-  int pos = 0;
-  for(auto it = dim_names.getValue().begin(); it != dim_names.getValue().end(); it++){
+  size_t pos = 0;
+  for(auto it = dim_names.begin(); it != dim_names.end(); it++){
     StringAttr name = ::llvm::dyn_cast<StringAttr>(*it);
     DimensionData dim_data;
     dim_data.name = name.str();
@@ -161,8 +160,37 @@ static LogicalResult validateConfig(DictionaryAttr config) {
   return success(validationResult);
 }
 
-static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> leftBuffer, TypedValue<MemRefType> rightBuffer, TypedValue<MemRefType> outBuffer,
-                               OpBuilder &b, Location loc, ValueRange localIvs, xsmm::DataTypeAttr dtype, Value dispatched) {
+static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas data, Value leftBuffer, 
+    Value rightBuffer, Value outBuffer) {
+    
+    xsmm::GemmFlagsAttr gemmFlags =
+    xsmm::GemmFlagsAttr::get(b.getContext(), xsmm::GemmFlags::NONE);
+    //TODO: bf16! 
+    auto dtype =
+      xsmm::DataTypeAttr::get(b.getContext(), xsmm::DataType::F32);
+    IntegerType integer64 = IntegerType::get(b.getContext(), 64);
+    
+    DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+        b.getContext(), ArrayRef<int64_t>(data.get_kernel_data()));
+
+    auto flags = b.getArrayAttr(gemmFlags);
+
+    Value dispatched = b.create<xsmm::GemmDispatchOp>(
+        loc, integer64, dims, flags, dtype);
+  
+ 
+  SmallVector<Value> invokeOperands;
+  invokeOperands.push_back(dispatched);
+  invokeOperands.push_back(leftBuffer);
+  invokeOperands.push_back(rightBuffer);
+  invokeOperands.push_back(outBuffer);
+  
+  b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
+  return scf::ValueVector();
+}
+
+static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas data, TypedValue<MemRefType> leftBuffer, 
+    TypedValue<MemRefType> rightBuffer, TypedValue<MemRefType> outBuffer, ValueRange localIvs) {
  
   size_t left_rank = cast<MemRefType>(leftBuffer.getType()).getRank();
   size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
@@ -192,7 +220,7 @@ static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> 
     DimensionData dim = *it;
     if (dim.pos_left != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        left_sizes[dim.pos_left] =  b.getI64IntegerAttr(dim.size);
+        left_sizes[dim.pos_left] = b.getI64IntegerAttr(dim.size);
         left_reduced_shape.push_back(dim.size);
       } else {
         left_offsets[dim.pos_left] = localIvs[pos_left];
@@ -201,7 +229,7 @@ static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> 
     }
     if (dim.pos_right != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        right_sizes[dim.pos_right] =  b.getI64IntegerAttr(dim.size);
+        right_sizes[dim.pos_right] = b.getI64IntegerAttr(dim.size);
         right_reduced_shape.push_back(dim.size);
        } else {
         right_offsets[dim.pos_right] = localIvs[pos_right];
@@ -227,14 +255,7 @@ static scf::ValueVector bodyBuilder(DimensionDatas data, TypedValue<MemRefType> 
   auto right_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, right_subview, ArrayRef<int64_t>(right_reduced_shape));
   auto out_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, out_subview, ArrayRef<int64_t>(out_reduced_shape));
 
-  SmallVector<Value> invokeOperands;
-  invokeOperands.push_back(dispatched);
-  invokeOperands.push_back(*left_reduced_subview);
-  invokeOperands.push_back(*right_reduced_subview);
-  invokeOperands.push_back(*out_reduced_subview);
-  
-  b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
-  return scf::ValueVector();
+  return bodyBuilder(b, loc, data, *left_reduced_subview, *right_reduced_subview, *out_reduced_subview);
 }
 
 struct ConvertBinaryContractionOp
@@ -258,76 +279,67 @@ struct ConvertBinaryContractionOp
     auto rightBuffer = binaryContractionOp.getRight();
     
     auto outBuffer = binaryContractionOp.getOut();
-   
-    xsmm::GemmFlagsAttr gemmFlags =
-    xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
-    //TODO: bf16! 
-    auto dtype =
-      xsmm::DataTypeAttr::get(rewriter.getContext(), xsmm::DataType::F32);
-    IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
-    
-    DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
-        rewriter.getContext(), ArrayRef<int64_t>(dim_data.get_kernel_data()));
 
-    auto flags = rewriter.getArrayAttr(gemmFlags);
+     
+    size_t left_rank = cast<MemRefType>(leftBuffer.getType()).getRank();
+    size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
+    size_t out_rank = cast<MemRefType>(outBuffer.getType()).getRank();
+    if ((left_rank == 2 && right_rank == 2 && out_rank == 2) || (left_rank == 3 && right_rank == 3 && out_rank == 3)) {
+      scf::ValueVector results = bodyBuilder(rewriter, loc, dim_data, leftBuffer, rightBuffer, outBuffer);
+    } else {
+      SmallVector<LoopWrapper, 4> loops;
+      SmallVector<Value, 4> ivs;
+      ValueRange currentIterArgs = std::nullopt;
+      Location currentLoc = loc;
 
-    Value dispatched = rewriter.create<xsmm::GemmDispatchOp>(
-        loc, integer64, dims, flags, dtype);
-  
-
-    SmallVector<LoopWrapper, 4> loops;
-    SmallVector<Value, 4> ivs;
-    ValueRange currentIterArgs = std::nullopt;
-    Location currentLoc = loc;
-
-    auto it = dim_data.data.begin();  
-    while((*it).parallel_type.compare("prim") != 0 && it != dim_data.data.end()) {
-      DimensionData d = (*it);
-      Value ubs = rewriter.create<mlir::arith::ConstantIndexOp>(loc, d.size);
-      if(d.parallel_type.compare("omp") == 0) {
-        auto loop = rewriter.create<scf::ParallelOp>(
-        currentLoc, zero, ubs, one, currentIterArgs,
-        [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange iv,
-            ValueRange args) {
-          ivs.append(iv.begin(), iv.end());
-          currentIterArgs = args;
-          currentLoc = nestedLoc;
-        });
-        rewriter.setInsertionPointToStart(loop.getBody());
-        loops.push_back(LoopWrapper(loop));
-      } else {
-        auto loop = rewriter.create<scf::ForOp>(
-        currentLoc, zero, ubs, one, currentIterArgs,
-        [&](OpBuilder &nestedBuilder, Location nestedLoc, Value iv,
-            ValueRange args) {
-          ivs.push_back(iv);
-          currentIterArgs = args;
-          currentLoc = nestedLoc;
-        });
-        rewriter.setInsertionPointToStart(loop.getBody());
-        loops.push_back(LoopWrapper(loop));
+      auto it = dim_data.data.begin();  
+      while((*it).parallel_type.compare("prim") != 0 && it != dim_data.data.end()) {
+        DimensionData d = (*it);
+        Value ubs = rewriter.create<mlir::arith::ConstantIndexOp>(loc, d.size);
+        if(d.parallel_type.compare("omp") == 0) {
+          auto loop = rewriter.create<scf::ParallelOp>(
+          currentLoc, zero, ubs, one, currentIterArgs,
+          [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange iv,
+              ValueRange args) {
+            ivs.append(iv.begin(), iv.end());
+            currentIterArgs = args;
+            currentLoc = nestedLoc;
+          });
+          rewriter.setInsertionPointToStart(loop.getBody());
+          loops.push_back(LoopWrapper(loop));
+        } else {
+          auto loop = rewriter.create<scf::ForOp>(
+          currentLoc, zero, ubs, one, currentIterArgs,
+          [&](OpBuilder &nestedBuilder, Location nestedLoc, Value iv,
+              ValueRange args) {
+            ivs.push_back(iv);
+            currentIterArgs = args;
+            currentLoc = nestedLoc;
+          });
+          rewriter.setInsertionPointToStart(loop.getBody());
+          loops.push_back(LoopWrapper(loop));
+        }
+        it++;
       }
-      it++;
-    }
 
-    SmallVector<LoopWrapper, 4> rewinded_loops;
+      SmallVector<LoopWrapper, 4> rewinded_loops;
 
-    //TODO better rewind
-    for (unsigned i = loops.size() - 1; i > 0; --i) {
-      rewinded_loops.push_back(loops[i - 1]);
-    }
+      //TODO better rewind
+      for (unsigned i = loops.size() - 1; i > 0; --i) {
+        rewinded_loops.push_back(loops[i - 1]);
+      }
 
-    for (unsigned i = 0, e = rewinded_loops.size() - 1; i < e; ++i) {
-      rewriter.setInsertionPointToEnd(rewinded_loops[i].getBody());
-      rewriter.create<scf::YieldOp>(loc, rewinded_loops[i + 1].getResults());
-    }
+      for (unsigned i = 0, e = rewinded_loops.size() - 1; i < e; ++i) {
+        rewriter.setInsertionPointToEnd(rewinded_loops[i].getBody());
+        rewriter.create<scf::YieldOp>(loc, rewinded_loops[i + 1].getResults());
+      }
+      
+      rewriter.setInsertionPointToStart(loops.back().getBody());
+      scf::ValueVector results = bodyBuilder(rewriter, currentLoc, dim_data, leftBuffer, rightBuffer, outBuffer, ivs);
+      rewriter.setInsertionPointToEnd(loops.back().getBody());
     
-    rewriter.setInsertionPointToStart(loops.back().getBody());
-    scf::ValueVector results = bodyBuilder(dim_data, leftBuffer, rightBuffer, outBuffer, rewriter, currentLoc, ivs, dtype, dispatched);
-    rewriter.setInsertionPointToEnd(loops.back().getBody());
-   
-    rewriter.create<scf::YieldOp>(loc, results);
-
+      rewriter.create<scf::YieldOp>(loc, results);
+    }
     SmallVector<Value> result({outBuffer});
     rewriter.replaceOp(binaryContractionOp, result);
 

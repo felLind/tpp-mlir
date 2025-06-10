@@ -189,9 +189,12 @@ private:
       // applicable to xsmm only. It'll be moved back in subsequent commits.
       pm.addPass(createConvertXsmmToFunc());
     }
+    
     // Covert all local TPP-related dialects.
     pm.addPass(createLocalDialectsLowering());
 
+    pm.addPass(createPrintIRPass());
+    
     // Clean up after the default pipeline.
     pm.addNestedPass<func::FuncOp>(createPostprocessing());
   }
