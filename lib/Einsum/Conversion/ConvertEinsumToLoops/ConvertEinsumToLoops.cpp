@@ -6,6 +6,7 @@
 #include "Einsum/Dialect/Einsum/EinsumOps.h"
 #include "Einsum/Passes.h"
 #include "TPP/Dialect/Xsmm/XsmmOps.h"
+#include "TPP/Dialect/Xsmm/XsmmEnum.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -75,6 +76,10 @@ static int64_t get_position(ArrayAttr dims, StringAttr name) {
 
 struct DimensionDatas {
   SmallVector<DimensionData> data;
+  xsmm::DataType dtype;
+  xsmm::UnaryKind prim_first_touch;
+  std::string prim_main;
+  xsmm::UnaryKind prim_last_touch;
 
   void add(DimensionData d) {
     data.push_back(d);
@@ -87,6 +92,8 @@ struct DimensionDatas {
     int64_t lda;
     int64_t ldb;
     int64_t ldc;
+    int64_t strideA;
+    int64_t strideB;
     
     for (auto it = data.begin(); it != data.end(); it++) {
       DimensionData d = *it;
@@ -104,14 +111,65 @@ struct DimensionDatas {
     }
     lda = ldc = m;
     ldb = k;
-    return {m, n, k, lda, ldb, ldc};
+    if (prim_main.compare("BRGEMM") == 0) {
+      auto it = data.begin();
+      while (it != data.end() && (*it).type.compare("k") != 0) {
+        it++;
+      }
+      strideA = (*it).stride_left;
+      strideB = (*it).stride_right;
+      return {m, n, k, lda, ldb, ldc, strideA, strideB};
+    } else if (prim_main.compare("GEMM") == 0) {
+      return {m, n, k, lda, ldb, ldc};
+    } else {
+      return {};
+    }
+  }
+
+  int64_t get_batch_size() {
+    if (prim_main.compare("BRGEMM") == 0) {
+      auto it = data.begin();
+      while (it != data.end() && (*it).type.compare("k") != 0) {
+        it++;
+      }
+      return (*it).size;
+    } else {
+      return 0;
+    }
   }
 };
+
+static xsmm::DataType getDType(DictionaryAttr config) {
+  xsmm::DataType result;
+  if( config.contains("dtype")){
+    result = xsmm::symbolizeDataType(::llvm::dyn_cast<StringAttr>(config.get("dtype"))).value_or(xsmm::DataType::F32);
+  } 
+  else {
+    result = xsmm::DataType::F32;
+  }
+  return result;
+}
+
+static xsmm::UnaryKind getUnary(DictionaryAttr config, std::string key){
+  xsmm::UnaryKind result;
+  if(config.contains(key)) {
+      result = xsmm::symbolizeUnaryKind(::llvm::dyn_cast<StringAttr>(config.get(key))).value_or(xsmm::UnaryKind::NONE);
+  } else {
+    result = xsmm::UnaryKind::NONE;
+  }
+  return result;
+}
 
 static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryContractionOp) {
   DimensionDatas result;
     
   DictionaryAttr config = binaryContractionOp.getConfig();
+  
+  result.dtype = getDType(config);
+  result.prim_first_touch = getUnary(config, "prim_first_touch");
+  result.prim_main = config.contains("prim_main") ? ::llvm::dyn_cast<StringAttr>(config.get("prim_main")).str() : "None";
+  result.prim_last_touch = getUnary(config, "prim_last_touch");
+    
   auto dim_names =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_names"));
   auto dim_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_types"));
   auto dim_sizes =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_sizes"));
@@ -122,6 +180,7 @@ static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryC
   auto strides_right =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_right"));
   auto strides_out =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_out"));
   auto parallel_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("parallel_types"));
+  
   size_t pos = 0;
   for(auto it = dim_names.begin(); it != dim_names.end(); it++){
     StringAttr name = ::llvm::dyn_cast<StringAttr>(*it);
@@ -155,37 +214,54 @@ static LogicalResult validateConfig(DictionaryAttr config) {
   validationResult &= config.contains("strides_right");
   validationResult &= config.contains("strides_out");
   validationResult &= config.contains("parallel_types");
-  validationResult &= config.contains("primitive_types");
+
 
   return success(validationResult);
 }
 
 static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas data, Value leftBuffer, 
-    Value rightBuffer, Value outBuffer) {
-    
-    xsmm::GemmFlagsAttr gemmFlags =
-    xsmm::GemmFlagsAttr::get(b.getContext(), xsmm::GemmFlags::NONE);
-    //TODO: bf16! 
-    auto dtype =
-      xsmm::DataTypeAttr::get(b.getContext(), xsmm::DataType::F32);
-    IntegerType integer64 = IntegerType::get(b.getContext(), 64);
-    
-    DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
-        b.getContext(), ArrayRef<int64_t>(data.get_kernel_data()));
+  Value rightBuffer, Value outBuffer) {
+  
+  xsmm::GemmFlagsAttr gemmFlags =
+  xsmm::GemmFlagsAttr::get(b.getContext(), xsmm::GemmFlags::NONE);
 
-    auto flags = b.getArrayAttr(gemmFlags);
+  auto dtype =
+    xsmm::DataTypeAttr::get(b.getContext(), data.dtype);
+  IntegerType integer64 = IntegerType::get(b.getContext(), 64);
+  
+  DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+      b.getContext(), ArrayRef<int64_t>(data.get_kernel_data()));
 
-    Value dispatched = b.create<xsmm::GemmDispatchOp>(
+  auto flags = b.getArrayAttr(gemmFlags);
+
+  if (data.prim_main.compare("BRGEMM") == 0) {
+    Value dispatched = b.create<xsmm::BrgemmDispatchOp>(
         loc, integer64, dims, flags, dtype);
+    
+    Value batchDim = b.create<arith::ConstantOp>(
+        loc, integer64, b.getIntegerAttr(integer64, data.get_batch_size()));
+    
+    SmallVector<Value> invokeOperands;
+    invokeOperands.push_back(dispatched);
+    invokeOperands.push_back(leftBuffer);
+    invokeOperands.push_back(rightBuffer);
+    invokeOperands.push_back(outBuffer);
+    invokeOperands.push_back(batchDim);
+    
+    b.create<xsmm::BrgemmOp>(loc, dtype, invokeOperands);
+  } else if (data.prim_main.compare("GEMM") == 0) {
+     Value dispatched = b.create<xsmm::GemmDispatchOp>(
+      loc, integer64, dims, flags, dtype);
   
- 
-  SmallVector<Value> invokeOperands;
-  invokeOperands.push_back(dispatched);
-  invokeOperands.push_back(leftBuffer);
-  invokeOperands.push_back(rightBuffer);
-  invokeOperands.push_back(outBuffer);
   
-  b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
+    SmallVector<Value> invokeOperands;
+    invokeOperands.push_back(dispatched);
+    invokeOperands.push_back(leftBuffer);
+    invokeOperands.push_back(rightBuffer);
+    invokeOperands.push_back(outBuffer);
+    
+    b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
+  }
   return scf::ValueVector();
 }
 
@@ -296,7 +372,7 @@ struct ConvertBinaryContractionOp
       while((*it).parallel_type.compare("prim") != 0 && it != dim_data.data.end()) {
         DimensionData d = (*it);
         Value ubs = rewriter.create<mlir::arith::ConstantIndexOp>(loc, d.size);
-        if(d.parallel_type.compare("omp") == 0) {
+        if(d.parallel_type.compare("shared") == 0) {
           auto loop = rewriter.create<scf::ParallelOp>(
           currentLoc, zero, ubs, one, currentIterArgs,
           [&](OpBuilder &nestedBuilder, Location nestedLoc, ValueRange iv,
