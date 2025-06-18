@@ -137,6 +137,18 @@ struct DimensionDatas {
       return 0;
     }
   }
+
+  int64_t get_pos_last_non_prim_k() {
+    int64_t pos = data.size() - 1;
+
+    for (auto it = data.end()-1; it != data.begin(); it--) {
+      if((*it).parallel_type.compare("prim") != 0 && (*it).type.compare("k") == 0) {
+        break;
+      }
+      pos--;
+    }
+    return pos;
+  }
 };
 
 static xsmm::DataType getDType(DictionaryAttr config) {
@@ -217,6 +229,23 @@ static LogicalResult validateConfig(DictionaryAttr config) {
 
 
   return success(validationResult);
+}
+
+static void createUnary(RewriterBase &rewriter, Location loc,
+                        ArrayRef<Value> operands, UnaryInfo unaryInfo,
+                        ArrayAttr flags, xsmm::UnaryKindAttr kind) {
+  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
+  DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
+      rewriter.getContext(), ArrayRef<int64_t>{unaryInfo.m, unaryInfo.n,
+                                               unaryInfo.ldi, unaryInfo.ldo});
+  auto dtype = xsmm::utils::getDataType(rewriter, operands.back().getType());
+  Value dispatched = rewriter.create<xsmm::UnaryDispatchOp>(
+      loc, integer64, kind, dims, flags, dtype);
+  SmallVector<Value> invokeOperands;
+  invokeOperands.push_back(dispatched);
+  invokeOperands.append(operands.begin(), operands.end());
+  rewriter.create<xsmm::UnaryOp>(loc, dtype, kind,
+                                             invokeOperands);
 }
 
 static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas data, Value leftBuffer, 
@@ -331,7 +360,57 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
   auto right_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, right_subview, ArrayRef<int64_t>(right_reduced_shape));
   auto out_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, out_subview, ArrayRef<int64_t>(out_reduced_shape));
 
-  return bodyBuilder(b, loc, data, *left_reduced_subview, *right_reduced_subview, *out_reduced_subview);
+  int64_t last_k_pos = data.get_pos_last_non_prim_k();
+  auto iter = localIvs[last_k_pos];
+  
+  // first touch: k iterator == zero
+  if (last_k_pos >= 0 && data.prim_first_touch != xsmm::UnaryKind::NONE) {
+    Value iterEqZero =
+      builder.create<arith::CmpIOp>(arith::CmpIPredicate::eq, iter, zero);
+     scf::IfOp ifOp = builder.create<scf::IfOp>(
+      loc, iterEqZero, 
+            [&](OpBuilder &b, Location loc) {
+              auto unaryInfo = xsmm::utils::getUnaryInfo(out_reduced_subview, out_reduced_subview,
+                                               xsmm::UnaryFlags::BCAST_SCALAR);
+              if (failed(unaryInfo))
+                return failure();
+
+              auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
+                  b.getContext(), xsmm::UnaryFlags::BCAST_SCALAR));
+              xsmm::UnaryKindAttr kind =
+                  xsmm::UnaryKindAttr::get(b.getContext(), data.prim_first_touch);
+              createUnary(b, loc, operands, *unaryInfo,
+                                              flags, kind);
+              b.create<scf::YieldOp>(loc, scf::ValueVector());
+            }, nullptr);
+  }
+  
+
+  scf::ValueVector result = bodyBuilder(b, loc, data, *left_reduced_subview, *right_reduced_subview, *out_reduced_subview);
+
+  // last touch: k iterator == |K|
+  if (last_k_pos >= 0 && data.prim_last_touch != xsmm::UnaryKind::NONE) {
+    Value iterEqMax =
+      builder.create<arith::CmpIOp>(arith::CmpIPredicate::eq, iter, b.createOrFold<mlir::arith::ConstantIndexOp>(loc,data.data[last_k_pos].size));
+       scf::IfOp ifOp = builder.create<scf::IfOp>(
+      loc, iterEqZero, 
+            [&](OpBuilder &b, Location loc) {
+              auto unaryInfo = xsmm::utils::getUnaryInfo(out_reduced_subview, out_reduced_subview,
+                                               xsmm::UnaryFlags::BCAST_SCALAR);
+              if (failed(unaryInfo))
+                return failure();
+
+              auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
+                  b.getContext(), xsmm::UnaryFlags::BCAST_SCALAR));
+              xsmm::UnaryKindAttr kind =
+                  xsmm::UnaryKindAttr::get(b.getContext(), data.prim_last_touch);
+              createUnary(b, loc, operands, *unaryInfo,
+                                              flags, kind);
+              b.create<scf::YieldOp>(loc, scf::ValueVector());
+            }, nullptr);
+  }
+
+  return result;
 }
 
 struct ConvertBinaryContractionOp
@@ -398,18 +477,18 @@ struct ConvertBinaryContractionOp
         it++;
       }
 
-      SmallVector<LoopWrapper, 4> rewinded_loops;
+      if (loops.size() > 1) {
+        SmallVector<LoopWrapper, 4> rewinded_loops;
+        //TODO better rewind
+        for (unsigned i = loops.size() - 1; i > 0; --i) {
+          rewinded_loops.push_back(loops[i - 1]);
+        }
 
-      //TODO better rewind
-      for (unsigned i = loops.size() - 1; i > 0; --i) {
-        rewinded_loops.push_back(loops[i - 1]);
+        for (unsigned i = 0, e = rewinded_loops.size() - 1; i < e; ++i) {
+          rewriter.setInsertionPointToEnd(rewinded_loops[i].getBody());
+          rewriter.create<scf::YieldOp>(loc, rewinded_loops[i + 1].getResults());
+        }
       }
-
-      for (unsigned i = 0, e = rewinded_loops.size() - 1; i < e; ++i) {
-        rewriter.setInsertionPointToEnd(rewinded_loops[i].getBody());
-        rewriter.create<scf::YieldOp>(loc, rewinded_loops[i + 1].getResults());
-      }
-      
       rewriter.setInsertionPointToStart(loops.back().getBody());
       scf::ValueVector results = bodyBuilder(rewriter, currentLoc, dim_data, leftBuffer, rightBuffer, outBuffer, ivs);
       rewriter.setInsertionPointToEnd(loops.back().getBody());
