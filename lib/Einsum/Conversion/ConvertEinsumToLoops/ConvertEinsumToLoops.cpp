@@ -436,7 +436,8 @@ struct ConvertBinaryContractionOp
     size_t left_rank = cast<MemRefType>(leftBuffer.getType()).getRank();
     size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
     size_t out_rank = cast<MemRefType>(outBuffer.getType()).getRank();
-    if ((left_rank == 2 && right_rank == 2 && out_rank == 2) || (left_rank == 3 && right_rank == 3 && out_rank == 3)) {
+    if ((left_rank == 2 && right_rank == 2 && out_rank == 2 && data.prim_main.compare("GEMM") == 0) 
+      || (left_rank == 3 && right_rank == 3 && out_rank == 2 && data.prim_main.compare("BRGEMM") == 0)) {
       scf::ValueVector results = bodyBuilder(rewriter, loc, dim_data, leftBuffer, rightBuffer, outBuffer);
     } else {
       SmallVector<LoopWrapper, 4> loops;
