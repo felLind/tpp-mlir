@@ -7,6 +7,7 @@
 #include "Einsum/Passes.h"
 #include "TPP/Dialect/Xsmm/XsmmOps.h"
 #include "TPP/Dialect/Xsmm/XsmmEnum.h"
+#include "TPP/Dialect/Xsmm/XsmmUtils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -232,7 +233,7 @@ static LogicalResult validateConfig(DictionaryAttr config) {
 }
 
 static void createUnary(RewriterBase &rewriter, Location loc,
-                        ArrayRef<Value> operands, UnaryInfo unaryInfo,
+                        ArrayRef<Value> operands, xsmm::UnaryInfo unaryInfo,
                         ArrayAttr flags, xsmm::UnaryKindAttr kind) {
   IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
@@ -248,27 +249,27 @@ static void createUnary(RewriterBase &rewriter, Location loc,
                                              invokeOperands);
 }
 
-static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas data, Value leftBuffer, 
+static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, DimensionDatas data, Value leftBuffer, 
   Value rightBuffer, Value outBuffer) {
   
   xsmm::GemmFlagsAttr gemmFlags =
-  xsmm::GemmFlagsAttr::get(b.getContext(), xsmm::GemmFlags::NONE);
+  xsmm::GemmFlagsAttr::get(rewriter.getContext(), xsmm::GemmFlags::NONE);
 
   auto dtype =
-    xsmm::DataTypeAttr::get(b.getContext(), data.dtype);
-  IntegerType integer64 = IntegerType::get(b.getContext(), 64);
+    xsmm::DataTypeAttr::get(rewriter.getContext(), data.dtype);
+  IntegerType integer64 = IntegerType::get(rewriter.getContext(), 64);
   
   DenseI64ArrayAttr dims = DenseI64ArrayAttr::get(
-      b.getContext(), ArrayRef<int64_t>(data.get_kernel_data()));
+      rewriter.getContext(), ArrayRef<int64_t>(data.get_kernel_data()));
 
-  auto flags = b.getArrayAttr(gemmFlags);
+  auto flags = rewriter.getArrayAttr(gemmFlags);
 
   if (data.prim_main.compare("BRGEMM") == 0) {
-    Value dispatched = b.create<xsmm::BrgemmDispatchOp>(
+    Value dispatched = rewriter.create<xsmm::BrgemmDispatchOp>(
         loc, integer64, dims, flags, dtype);
     
-    Value batchDim = b.create<arith::ConstantOp>(
-        loc, integer64, b.getIntegerAttr(integer64, data.get_batch_size()));
+    Value batchDim = rewriter.create<arith::ConstantOp>(
+        loc, integer64, rewriter.getIntegerAttr(integer64, data.get_batch_size()));
     
     SmallVector<Value> invokeOperands;
     invokeOperands.push_back(dispatched);
@@ -277,9 +278,9 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
     invokeOperands.push_back(outBuffer);
     invokeOperands.push_back(batchDim);
     
-    b.create<xsmm::BrgemmOp>(loc, dtype, invokeOperands);
+    rewriter.create<xsmm::BrgemmOp>(loc, dtype, invokeOperands);
   } else if (data.prim_main.compare("GEMM") == 0) {
-     Value dispatched = b.create<xsmm::GemmDispatchOp>(
+     Value dispatched = rewriter.create<xsmm::GemmDispatchOp>(
       loc, integer64, dims, flags, dtype);
   
   
@@ -289,20 +290,20 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
     invokeOperands.push_back(rightBuffer);
     invokeOperands.push_back(outBuffer);
     
-    b.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
+    rewriter.create<xsmm::GemmOp>(loc, dtype, invokeOperands);
   }
   return scf::ValueVector();
 }
 
-static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas data, TypedValue<MemRefType> leftBuffer, 
+static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, DimensionDatas data, TypedValue<MemRefType> leftBuffer, 
     TypedValue<MemRefType> rightBuffer, TypedValue<MemRefType> outBuffer, ValueRange localIvs) {
  
   size_t left_rank = cast<MemRefType>(leftBuffer.getType()).getRank();
   size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
   size_t out_rank = cast<MemRefType>(outBuffer.getType()).getRank();
 
-  OpFoldResult zero = b.createOrFold<mlir::arith::ConstantIndexOp>(loc, 0);
-  OpFoldResult one = b.getI64IntegerAttr(1);
+  OpFoldResult zero = rewriter.createOrFold<mlir::arith::ConstantIndexOp>(loc, 0);
+  OpFoldResult one = rewriter.getI64IntegerAttr(1);
 
   SmallVector<OpFoldResult> left_offsets(left_rank, zero);
   SmallVector<OpFoldResult> left_sizes(left_rank, one);
@@ -325,7 +326,7 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
     DimensionData dim = *it;
     if (dim.pos_left != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        left_sizes[dim.pos_left] = b.getI64IntegerAttr(dim.size);
+        left_sizes[dim.pos_left] = rewriter.getI64IntegerAttr(dim.size);
         left_reduced_shape.push_back(dim.size);
       } else {
         left_offsets[dim.pos_left] = localIvs[pos_left];
@@ -334,7 +335,7 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
     }
     if (dim.pos_right != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        right_sizes[dim.pos_right] = b.getI64IntegerAttr(dim.size);
+        right_sizes[dim.pos_right] = rewriter.getI64IntegerAttr(dim.size);
         right_reduced_shape.push_back(dim.size);
        } else {
         right_offsets[dim.pos_right] = localIvs[pos_right];
@@ -343,7 +344,7 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
     }
     if (dim.pos_out != -1) {
       if (dim.parallel_type.compare("prim") == 0) {
-        out_sizes[dim.pos_out] = b.getI64IntegerAttr(dim.size);
+        out_sizes[dim.pos_out] = rewriter.getI64IntegerAttr(dim.size);
         out_reduced_shape.push_back(dim.size);
       } else {
         out_offsets[dim.pos_out] = localIvs[pos_out];
@@ -352,59 +353,55 @@ static scf::ValueVector bodyBuilder(OpBuilder &b, Location loc, DimensionDatas d
     }
   }
 
-  auto left_subview = b.create<mlir::memref::SubViewOp>(loc, leftBuffer, left_offsets, left_sizes, left_strides);
-  auto right_subview = b.create<mlir::memref::SubViewOp>(loc, rightBuffer, right_offsets, right_sizes, right_strides);
-  auto out_subview = b.create<mlir::memref::SubViewOp>(loc, outBuffer, out_offsets, out_sizes, out_strides);
+  auto left_subview = rewriter.create<mlir::memref::SubViewOp>(loc, leftBuffer, left_offsets, left_sizes, left_strides);
+  auto right_subview = rewriter.create<mlir::memref::SubViewOp>(loc, rightBuffer, right_offsets, right_sizes, right_strides);
+  auto out_subview = rewriter.create<mlir::memref::SubViewOp>(loc, outBuffer, out_offsets, out_sizes, out_strides);
 
-  auto left_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, left_subview, ArrayRef<int64_t>(left_reduced_shape));
-  auto right_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, right_subview, ArrayRef<int64_t>(right_reduced_shape));
-  auto out_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(b, loc, out_subview, ArrayRef<int64_t>(out_reduced_shape));
+  auto left_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, left_subview, ArrayRef<int64_t>(left_reduced_shape));
+  auto right_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, right_subview, ArrayRef<int64_t>(right_reduced_shape));
+  auto out_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, out_subview, ArrayRef<int64_t>(out_reduced_shape));
 
   int64_t last_k_pos = data.get_pos_last_non_prim_k();
   auto iter = localIvs[last_k_pos];
-  
+
   // first touch: k iterator == zero
   if (last_k_pos >= 0 && data.prim_first_touch != xsmm::UnaryKind::NONE) {
     Value iterEqZero =
-      builder.create<arith::CmpIOp>(arith::CmpIPredicate::eq, iter, zero);
-     scf::IfOp ifOp = builder.create<scf::IfOp>(
+     rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, iter, rewriter.createOrFold<mlir::arith::ConstantIndexOp>(loc, 0));
+     rewriter.create<scf::IfOp>(
       loc, iterEqZero, 
             [&](OpBuilder &b, Location loc) {
-              auto unaryInfo = xsmm::utils::getUnaryInfo(out_reduced_subview, out_reduced_subview,
+               auto unaryInfo = xsmm::utils::getUnaryInfo(*out_reduced_subview, *out_reduced_subview,
                                                xsmm::UnaryFlags::BCAST_SCALAR);
-              if (failed(unaryInfo))
-                return failure();
 
               auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
                   b.getContext(), xsmm::UnaryFlags::BCAST_SCALAR));
               xsmm::UnaryKindAttr kind =
                   xsmm::UnaryKindAttr::get(b.getContext(), data.prim_first_touch);
-              createUnary(b, loc, operands, *unaryInfo,
+              createUnary(rewriter, loc, ArrayRef<Value>({*out_reduced_subview, *out_reduced_subview}), *unaryInfo,
                                               flags, kind);
               b.create<scf::YieldOp>(loc, scf::ValueVector());
             }, nullptr);
   }
   
 
-  scf::ValueVector result = bodyBuilder(b, loc, data, *left_reduced_subview, *right_reduced_subview, *out_reduced_subview);
+  scf::ValueVector result = bodyBuilder(rewriter, loc, data, *left_reduced_subview, *right_reduced_subview, *out_reduced_subview);
 
   // last touch: k iterator == |K|
   if (last_k_pos >= 0 && data.prim_last_touch != xsmm::UnaryKind::NONE) {
     Value iterEqMax =
-      builder.create<arith::CmpIOp>(arith::CmpIPredicate::eq, iter, b.createOrFold<mlir::arith::ConstantIndexOp>(loc,data.data[last_k_pos].size));
-       scf::IfOp ifOp = builder.create<scf::IfOp>(
-      loc, iterEqZero, 
+      rewriter.create<arith::CmpIOp>(loc, arith::CmpIPredicate::eq, iter, rewriter.createOrFold<mlir::arith::ConstantIndexOp>(loc,data.data[last_k_pos].size));
+      rewriter.create<scf::IfOp>(
+      loc, iterEqMax, 
             [&](OpBuilder &b, Location loc) {
-              auto unaryInfo = xsmm::utils::getUnaryInfo(out_reduced_subview, out_reduced_subview,
+              auto unaryInfo = xsmm::utils::getUnaryInfo(*out_reduced_subview, *out_reduced_subview,
                                                xsmm::UnaryFlags::BCAST_SCALAR);
-              if (failed(unaryInfo))
-                return failure();
-
+            
               auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
                   b.getContext(), xsmm::UnaryFlags::BCAST_SCALAR));
               xsmm::UnaryKindAttr kind =
                   xsmm::UnaryKindAttr::get(b.getContext(), data.prim_last_touch);
-              createUnary(b, loc, operands, *unaryInfo,
+              createUnary(rewriter, loc,  ArrayRef<Value>({*out_reduced_subview, *out_reduced_subview}), *unaryInfo,
                                               flags, kind);
               b.create<scf::YieldOp>(loc, scf::ValueVector());
             }, nullptr);
