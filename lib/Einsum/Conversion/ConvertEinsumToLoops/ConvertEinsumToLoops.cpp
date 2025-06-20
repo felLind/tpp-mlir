@@ -48,6 +48,10 @@ struct LoopWrapper {
   ResultRange getResults() {
     return forOp != nullptr ? forOp.getResults() : parallelOp != nullptr ? parallelOp.getResults() : ResultRange(nullptr);
   }
+
+  bool isParallel() {
+    return parallelOp != nullptr;
+  }
 };
 
 struct DimensionData {
@@ -372,10 +376,10 @@ static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, Dimens
       loc, iterEqZero, 
             [&](OpBuilder &b, Location loc) {
                auto unaryInfo = xsmm::utils::getUnaryInfo(*out_reduced_subview, *out_reduced_subview,
-                                               xsmm::UnaryFlags::BCAST_SCALAR);
+                                               xsmm::UnaryFlags::NONE);
 
               auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
-                  b.getContext(), xsmm::UnaryFlags::BCAST_SCALAR));
+                  b.getContext(), xsmm::UnaryFlags::NONE));
               xsmm::UnaryKindAttr kind =
                   xsmm::UnaryKindAttr::get(b.getContext(), data.prim_first_touch);
               createUnary(rewriter, loc, ArrayRef<Value>({*out_reduced_subview, *out_reduced_subview}), *unaryInfo,
@@ -395,10 +399,10 @@ static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, Dimens
       loc, iterEqMax, 
             [&](OpBuilder &b, Location loc) {
               auto unaryInfo = xsmm::utils::getUnaryInfo(*out_reduced_subview, *out_reduced_subview,
-                                               xsmm::UnaryFlags::BCAST_SCALAR);
+                                               xsmm::UnaryFlags::NONE);
             
               auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
-                  b.getContext(), xsmm::UnaryFlags::BCAST_SCALAR));
+                  b.getContext(), xsmm::UnaryFlags::NONE));
               xsmm::UnaryKindAttr kind =
                   xsmm::UnaryKindAttr::get(b.getContext(), data.prim_last_touch);
               createUnary(rewriter, loc,  ArrayRef<Value>({*out_reduced_subview, *out_reduced_subview}), *unaryInfo,
@@ -436,8 +440,8 @@ struct ConvertBinaryContractionOp
     size_t left_rank = cast<MemRefType>(leftBuffer.getType()).getRank();
     size_t right_rank = cast<MemRefType>(rightBuffer.getType()).getRank();
     size_t out_rank = cast<MemRefType>(outBuffer.getType()).getRank();
-    if ((left_rank == 2 && right_rank == 2 && out_rank == 2 && data.prim_main.compare("GEMM") == 0) 
-      || (left_rank == 3 && right_rank == 3 && out_rank == 2 && data.prim_main.compare("BRGEMM") == 0)) {
+    if ((left_rank == 2 && right_rank == 2 && out_rank == 2 && dim_data.prim_main.compare("GEMM") == 0) 
+      || (left_rank == 3 && right_rank == 3 && out_rank == 2 && dim_data.prim_main.compare("BRGEMM") == 0)) {
       scf::ValueVector results = bodyBuilder(rewriter, loc, dim_data, leftBuffer, rightBuffer, outBuffer);
     } else {
       SmallVector<LoopWrapper, 4> loops;
@@ -490,8 +494,10 @@ struct ConvertBinaryContractionOp
       rewriter.setInsertionPointToStart(loops.back().getBody());
       scf::ValueVector results = bodyBuilder(rewriter, currentLoc, dim_data, leftBuffer, rightBuffer, outBuffer, ivs);
       rewriter.setInsertionPointToEnd(loops.back().getBody());
-    
-      rewriter.create<scf::YieldOp>(loc, results);
+      
+      if(loops.size() > 1 || !loops[0].isParallel()) {
+        rewriter.create<scf::YieldOp>(loc, results);
+      }
     }
     SmallVector<Value> result({outBuffer});
     rewriter.replaceOp(binaryContractionOp, result);

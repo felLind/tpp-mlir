@@ -1,0 +1,13 @@
+// RUN: tpp-run %s -n 5 \
+// RUN:  -e binary -entry-point-result=void
+
+func.func @binary( %left: memref<4x4xf32>, %right: memref<4x4xf32>, %out: memref<4x4xf32> ) -> memref<4x4xf32> {
+
+	%test = einsum.contract_binary({dim_names=["a","b","c"],"dim_sizes"=[4,4,4],"dim_types"=["m","n","k"],
+		"dims_left"=["c", "a"], "dims_right"=["b", "c"], "dims_out"=["a","b"],
+		"strides_left"=[1,0, 4], "strides_right"=[0,4,1], "strides_out"=[1,4,0],
+		"parallel_types"=["prim", "prim", "prim"], "prim_main"="GEMM"},
+		%left, %right, %out) : (memref<4x4xf32>, memref<4x4xf32>, memref<4x4xf32>) -> memref<4x4xf32>
+		return %out : memref<4x4xf32>
+}
+
