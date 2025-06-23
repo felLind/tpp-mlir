@@ -480,15 +480,11 @@ struct ConvertBinaryContractionOp
       }
 
       if (loops.size() > 1) {
-        SmallVector<LoopWrapper, 4> rewinded_loops;
-        //TODO better rewind
-        for (unsigned i = loops.size() - 1; i > 0; --i) {
-          rewinded_loops.push_back(loops[i - 1]);
-        }
-
-        for (unsigned i = 0, e = rewinded_loops.size() - 1; i < e; ++i) {
-          rewriter.setInsertionPointToEnd(rewinded_loops[i].getBody());
-          rewriter.create<scf::YieldOp>(loc, rewinded_loops[i + 1].getResults());
+        for (unsigned i = 0, e = loops.size() - 1; i < e; ++i) {
+          if(!loops[i].isParallel()) {
+            rewriter.setInsertionPointToEnd(loops[i].getBody());
+            rewriter.create<scf::YieldOp>(loc, loops[i + 1].getResults());
+          }
         }
       }
       rewriter.setInsertionPointToStart(loops.back().getBody());
