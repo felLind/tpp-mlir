@@ -67,16 +67,16 @@ struct DimensionData {
   std::string parallel_type;
 };
 
-static int64_t get_position(ArrayAttr dims, StringAttr name) {
+static int64_t get_position(ArrayAttr strides, int current_pos) {
   int64_t pos = 0;
-  for(auto it = dims.begin(); it != dims.end(); it++){
-    StringAttr current_dim = ::llvm::dyn_cast<StringAttr>(*it);
-    if (current_dim.compare(name) == 0) {
-      return pos;
+  int64_t current_stride = ::llvm::dyn_cast<IntegerAttr>(strides[current_pos]).getInt();
+  for(size_t i = 0; i < strides.size(); i++){
+    int64_t stride = ::llvm::dyn_cast<IntegerAttr>(strides[i]).getInt();
+    if (stride != 0 && stride > current_stride) {
+      pos++;
     }
-    pos++;
   }
-  return -1;
+  return current_stride != 0 ? pos : -1;
 }
 
 struct DimensionDatas {
@@ -190,25 +190,20 @@ static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryC
   auto dim_names =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_names"));
   auto dim_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_types"));
   auto dim_sizes =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_sizes"));
-  auto dims_left =  ::llvm::dyn_cast<ArrayAttr>(config.get("dims_left"));
-  auto dims_right =  ::llvm::dyn_cast<ArrayAttr>(config.get("dims_right"));
-  auto dims_out =  ::llvm::dyn_cast<ArrayAttr>(config.get("dims_out"));  
   auto strides_left =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_left"));
   auto strides_right =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_right"));
   auto strides_out =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_out"));
   auto parallel_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("parallel_types"));
   
   size_t pos = 0;
-  for(auto it = dim_names.begin(); it != dim_names.end(); it++){
-    StringAttr name = ::llvm::dyn_cast<StringAttr>(*it);
+  for(auto it = dim_sizes.begin(); it != dim_sizes.end(); it++){
     DimensionData dim_data;
-    dim_data.name = name.str();
     dim_data.type = ::llvm::dyn_cast<StringAttr>(dim_types[pos]).str();
     dim_data.size = ::llvm::dyn_cast<IntegerAttr>(dim_sizes[pos]).getInt();
     dim_data.parallel_type = ::llvm::dyn_cast<StringAttr>(parallel_types[pos]).str();
-    dim_data.pos_left = get_position(dims_left, name);
-    dim_data.pos_right = get_position(dims_right, name);
-    dim_data.pos_out = get_position(dims_out, name);
+    dim_data.pos_left = get_position(strides_left, pos);
+    dim_data.pos_right = get_position(strides_right, pos);
+    dim_data.pos_out = get_position(strides_out, pos);
     dim_data.stride_left = ::llvm::dyn_cast<IntegerAttr>(strides_left[pos]).getInt();
     dim_data.stride_right = ::llvm::dyn_cast<IntegerAttr>(strides_right[pos]).getInt();
     dim_data.stride_out = ::llvm::dyn_cast<IntegerAttr>(strides_out[pos]).getInt();
@@ -221,17 +216,12 @@ static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryC
 
 static LogicalResult validateConfig(DictionaryAttr config) {
   bool validationResult = true;
-  validationResult &= config.contains("dim_names");
   validationResult &= config.contains("dim_sizes");
   validationResult &= config.contains("dim_types");
-  validationResult &= config.contains("dims_left");
-  validationResult &= config.contains("dims_right");
-  validationResult &= config.contains("dims_out");
   validationResult &= config.contains("strides_left");
   validationResult &= config.contains("strides_right");
   validationResult &= config.contains("strides_out");
   validationResult &= config.contains("parallel_types");
-
 
   return success(validationResult);
 }
