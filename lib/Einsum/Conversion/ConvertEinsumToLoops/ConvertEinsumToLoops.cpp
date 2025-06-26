@@ -187,7 +187,6 @@ static DimensionDatas create_dimension_datas(einsum::BinaryContractionOp binaryC
   result.prim_main = config.contains("prim_main") ? ::llvm::dyn_cast<StringAttr>(config.get("prim_main")).str() : "None";
   result.prim_last_touch = getUnary(config, "prim_last_touch");
     
-  auto dim_names =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_names"));
   auto dim_types =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_types"));
   auto dim_sizes =  ::llvm::dyn_cast<ArrayAttr>(config.get("dim_sizes"));
   auto strides_left =  ::llvm::dyn_cast<ArrayAttr>(config.get("strides_left"));
@@ -355,6 +354,10 @@ static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, Dimens
   auto right_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, right_subview, ArrayRef<int64_t>(right_reduced_shape));
   auto out_reduced_subview = memref::SubViewOp::rankReduceIfNeeded(rewriter, loc, out_subview, ArrayRef<int64_t>(out_reduced_shape));
 
+  auto left = failed(left_reduced_subview) ? leftBuffer : *left_reduced_subview;
+  auto right = failed(right_reduced_subview) ? rightBuffer : *right_reduced_subview;
+  auto out = failed(out_reduced_subview) ? outBuffer : *out_reduced_subview;
+
   int64_t last_k_pos = data.get_pos_last_non_prim_k();
   auto iter = localIvs[last_k_pos];
 
@@ -365,21 +368,21 @@ static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, Dimens
      rewriter.create<scf::IfOp>(
       loc, iterEqZero, 
             [&](OpBuilder &b, Location loc) {
-               auto unaryInfo = xsmm::utils::getUnaryInfo(*out_reduced_subview, *out_reduced_subview,
+               auto unaryInfo = xsmm::utils::getUnaryInfo(out, out,
                                                xsmm::UnaryFlags::NONE);
 
               auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
                   b.getContext(), xsmm::UnaryFlags::NONE));
               xsmm::UnaryKindAttr kind =
                   xsmm::UnaryKindAttr::get(b.getContext(), data.prim_first_touch);
-              createUnary(rewriter, loc, ArrayRef<Value>({*out_reduced_subview, *out_reduced_subview}), *unaryInfo,
+              createUnary(rewriter, loc, ArrayRef<Value>({out, out}), *unaryInfo,
                                               flags, kind);
               b.create<scf::YieldOp>(loc, scf::ValueVector());
             }, nullptr);
   }
   
 
-  scf::ValueVector result = bodyBuilder(rewriter, loc, data, *left_reduced_subview, *right_reduced_subview, *out_reduced_subview);
+  scf::ValueVector result = bodyBuilder(rewriter, loc, data, left, right, out);
 
   // last touch: k iterator == |K|
   if (last_k_pos >= 0 && data.prim_last_touch != xsmm::UnaryKind::NONE) {
@@ -388,14 +391,14 @@ static scf::ValueVector bodyBuilder(RewriterBase &rewriter, Location loc, Dimens
       rewriter.create<scf::IfOp>(
       loc, iterEqMax, 
             [&](OpBuilder &b, Location loc) {
-              auto unaryInfo = xsmm::utils::getUnaryInfo(*out_reduced_subview, *out_reduced_subview,
+              auto unaryInfo = xsmm::utils::getUnaryInfo(out, out,
                                                xsmm::UnaryFlags::NONE);
             
               auto flags = b.getArrayAttr(xsmm::UnaryFlagsAttr::get(
                   b.getContext(), xsmm::UnaryFlags::NONE));
               xsmm::UnaryKindAttr kind =
                   xsmm::UnaryKindAttr::get(b.getContext(), data.prim_last_touch);
-              createUnary(rewriter, loc,  ArrayRef<Value>({*out_reduced_subview, *out_reduced_subview}), *unaryInfo,
+              createUnary(rewriter, loc,  ArrayRef<Value>({out, out}), *unaryInfo,
                                               flags, kind);
               b.create<scf::YieldOp>(loc, scf::ValueVector());
             }, nullptr);
