@@ -482,9 +482,9 @@ struct ConvertBinaryContractionOp
       }
       rewriter.setInsertionPointToStart(loops.back().getBody());
       scf::ValueVector results = bodyBuilder(rewriter, currentLoc, dim_data, leftBuffer, rightBuffer, outBuffer, ivs);
-      rewriter.setInsertionPointToEnd(loops.back().getBody());
       
-      if(loops.size() > 1 || !loops[0].isParallel()) {
+      if(!loops[loops.size() - 1].isParallel()) {
+        rewriter.setInsertionPointToEnd(loops.back().getBody());
         rewriter.create<scf::YieldOp>(loc, results);
       }
     }

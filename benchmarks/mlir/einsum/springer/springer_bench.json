@@ -1,0 +1,13 @@
+[
+    {
+        "abdfe-cf-abcde": {
+            "einsum-ir": {
+                "type": "MLIR",
+                "benchmark": "einsum/springer/abdfe-cf-abcde.mlir",
+                "environment": {},
+                "flags": [ "-n", "10" ],
+                "extensions": [ "(avx2|asimd)" ]
+            }
+        }
+    }
+]
